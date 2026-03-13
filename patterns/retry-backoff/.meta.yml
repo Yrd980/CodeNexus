@@ -1,0 +1,20 @@
+module: patterns/retry-backoff
+version: 1.0.0
+last_updated: 2026-03-13
+maturity: draft
+language: typescript
+tags: [retry, backoff, resilience, fault-tolerance, network]
+source:
+  - "internal"
+inspired_by:
+  - project: "AWS Architecture Blog"
+    what_we_learned: "Full jitter outperforms equal jitter and decorrelated backoff in high-contention scenarios"
+  - project: "sindresorhus/p-retry"
+    what_we_learned: "Clean API design for retry with abort support"
+quality_checklist:
+  runnable: true
+  no_hardcode: true
+  typed: true
+  error_handling: true
+  has_tests: true
+  has_readme: true
