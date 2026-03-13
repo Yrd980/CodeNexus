@@ -1,0 +1,20 @@
+module: foundation/api
+version: 1.0.0
+last_updated: 2026-03-14
+maturity: draft
+language: typescript
+tags: [api, validation, routing, rest, cors, pagination]
+source:
+  - "internal"
+inspired_by:
+  - project: "honojs/hono"
+    what_we_learned: "Lightweight routing with type inference provides the best DX"
+  - project: "trpc/trpc"
+    what_we_learned: "End-to-end type safety between validation schema and handler is transformative"
+quality_checklist:
+  runnable: true
+  no_hardcode: true
+  typed: true
+  error_handling: true
+  has_tests: true
+  has_readme: true
