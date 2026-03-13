@@ -1,0 +1,20 @@
+module: foundation/auth
+version: 1.0.0
+last_updated: 2026-03-13
+maturity: draft
+language: typescript
+tags: [auth, jwt, session, security, middleware]
+source:
+  - "internal"
+inspired_by:
+  - project: "lucia-auth"
+    what_we_learned: "Session-based design with pluggable storage is more flexible than pure stateless JWT"
+  - project: "OWASP"
+    what_we_learned: "Refresh token rotation with reuse detection prevents token theft escalation"
+quality_checklist:
+  runnable: true
+  no_hardcode: true
+  typed: true
+  error_handling: true
+  has_tests: true
+  has_readme: true
