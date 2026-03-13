@@ -1,0 +1,20 @@
+module: modules/payments
+version: 1.0.0
+last_updated: 2026-03-14
+maturity: draft
+language: typescript
+tags: [payments, stripe, subscriptions, webhooks, idempotency]
+source:
+  - "internal"
+inspired_by:
+  - project: "Stripe"
+    what_we_learned: "Idempotency keys and webhook signature verification are non-negotiable for payment safety"
+  - project: "Paddle"
+    what_we_learned: "Subscription state machine with explicit transitions prevents impossible states"
+quality_checklist:
+  runnable: true
+  no_hardcode: true
+  typed: true
+  error_handling: true
+  has_tests: true
+  has_readme: true
