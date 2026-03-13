@@ -1,0 +1,17 @@
+{
+  "name": "@codenexus/realtime",
+  "version": "1.0.0",
+  "description": "Real-time communication patterns: WebSocket management, pub/sub rooms, presence tracking, and connection recovery",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}
