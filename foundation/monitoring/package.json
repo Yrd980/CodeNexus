@@ -1,0 +1,40 @@
+{
+  "name": "@codenexus/monitoring",
+  "version": "1.0.0",
+  "description": "Structured logging, metrics collection, distributed tracing, and health checks for startups",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "keywords": [
+    "logging",
+    "metrics",
+    "tracing",
+    "observability",
+    "monitoring",
+    "health-check",
+    "prometheus",
+    "opentelemetry"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}

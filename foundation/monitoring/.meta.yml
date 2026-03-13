@@ -1,0 +1,20 @@
+module: foundation/monitoring
+version: 1.0.0
+last_updated: 2026-03-14
+maturity: draft
+language: typescript
+tags: [logging, metrics, tracing, observability, health-check, monitoring]
+source:
+  - "internal"
+inspired_by:
+  - project: "pinojs/pino"
+    what_we_learned: "JSON-first structured logging with child loggers is the right abstraction"
+  - project: "OpenTelemetry"
+    what_we_learned: "W3C Trace Context + span model covers all distributed tracing needs"
+quality_checklist:
+  runnable: true
+  no_hardcode: true
+  typed: true
+  error_handling: true
+  has_tests: true
+  has_readme: true
