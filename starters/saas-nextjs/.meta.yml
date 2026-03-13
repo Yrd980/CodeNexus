@@ -1,0 +1,20 @@
+module: starters/saas-nextjs
+version: 1.0.0
+last_updated: 2026-03-14
+maturity: draft
+language: typescript
+tags: [saas, nextjs, react, dashboard, billing, auth, app-router]
+source:
+  - "internal"
+inspired_by:
+  - project: "vercel/nextjs-subscription-payments"
+    what_we_learned: "Webhook-driven billing sync is more reliable than polling"
+  - project: "shadcn/taxonomy"
+    what_we_learned: "App Router with server components + middleware auth is the clean SaaS architecture"
+quality_checklist:
+  runnable: true
+  no_hardcode: true
+  typed: true
+  error_handling: true
+  has_tests: true
+  has_readme: true
