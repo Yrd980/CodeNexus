@@ -1,0 +1,20 @@
+module: patterns/rate-limiter
+version: 1.0.0
+last_updated: 2026-03-13
+maturity: draft
+language: typescript
+tags: [rate-limiting, api, middleware, throttling, security]
+source:
+  - "internal"
+inspired_by:
+  - project: "Cloudflare"
+    what_we_learned: "Sliding window counters balance accuracy and memory better than sliding logs"
+  - project: "upstash/ratelimit"
+    what_we_learned: "Clean pluggable store interface pattern"
+quality_checklist:
+  runnable: true
+  no_hardcode: true
+  typed: true
+  error_handling: true
+  has_tests: true
+  has_readme: true
