@@ -1,0 +1,20 @@
+module: foundation/ci-cd
+version: 1.0.0
+last_updated: 2026-03-14
+maturity: draft
+language: typescript
+tags: [ci-cd, github-actions, deployment, release, devops]
+source:
+  - "internal"
+inspired_by:
+  - project: "semantic-release"
+    what_we_learned: "Conventional commits + automated changelog removes human error from releases"
+  - project: "GitHub Actions"
+    what_we_learned: "Reusable workflows and matrix builds dramatically reduce pipeline maintenance"
+quality_checklist:
+  runnable: true
+  no_hardcode: true
+  typed: true
+  error_handling: true
+  has_tests: true
+  has_readme: true
