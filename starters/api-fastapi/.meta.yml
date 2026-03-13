@@ -1,0 +1,18 @@
+module: starters/api-fastapi
+version: 1.0.0
+last_updated: 2026-03-14
+maturity: draft
+language: python
+tags: [fastapi, api, rest, python, starter, crud]
+source:
+  - "internal"
+inspired_by:
+  - project: "tiangolo/full-stack-fastapi-template"
+    what_we_learned: "App factory + dependency injection is the scalable FastAPI architecture"
+quality_checklist:
+  runnable: true
+  no_hardcode: true
+  typed: true
+  error_handling: true
+  has_tests: true
+  has_readme: true
