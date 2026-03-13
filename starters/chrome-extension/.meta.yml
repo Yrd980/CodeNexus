@@ -1,0 +1,20 @@
+module: starters/chrome-extension
+version: 1.0.0
+last_updated: 2026-03-14
+maturity: draft
+language: typescript
+tags: [chrome-extension, manifest-v3, browser, messaging, service-worker]
+source:
+  - "internal"
+inspired_by:
+  - project: "nicedoc/crxjs"
+    what_we_learned: "Type-safe message passing with discriminated unions prevents the #1 extension bug"
+  - project: "AryaVaidya/Chrome-Extension-MV3-Starter"
+    what_we_learned: "Service worker lifecycle management is the key challenge in MV3"
+quality_checklist:
+  runnable: true
+  no_hardcode: true
+  typed: true
+  error_handling: true
+  has_tests: true
+  has_readme: true
