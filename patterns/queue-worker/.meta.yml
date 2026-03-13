@@ -1,0 +1,22 @@
+module: patterns/queue-worker
+version: 1.0.0
+last_updated: 2026-03-14
+maturity: draft
+language: typescript
+tags: [queue, worker, background-jobs, concurrency, retry]
+source:
+  - "internal"
+inspired_by:
+  - project: "taskforcesh/bullmq"
+    what_we_learned: "Priority + delay + retry covers 90% of real-world job queue needs"
+  - project: "sidekiq"
+    what_we_learned: "Concurrency control with graceful shutdown is non-negotiable for production"
+  - project: "temporalio/temporal"
+    what_we_learned: "Pluggable storage backend lets you start simple and scale later"
+quality_checklist:
+  runnable: true
+  no_hardcode: true
+  typed: true
+  error_handling: true
+  has_tests: true
+  has_readme: true
