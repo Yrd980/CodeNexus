@@ -1,0 +1,17 @@
+{
+  "name": "@codenexus/retry-backoff",
+  "version": "1.0.0",
+  "description": "Exponential backoff with jitter for resilient async operations. Zero dependencies.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}
