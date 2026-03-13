@@ -1,0 +1,30 @@
+{
+  "name": "@codenexus/cli-tool",
+  "version": "1.0.0",
+  "description": "Zero-dependency CLI tool starter with arg parsing, prompts, and config management",
+  "type": "module",
+  "bin": {
+    "mycli": "dist/cli.js"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "start": "node dist/cli.js"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  },
+  "keywords": [
+    "cli",
+    "command-line",
+    "starter",
+    "terminal",
+    "argument-parsing"
+  ],
+  "license": "MIT"
+}
