@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build the next OpenClaw iteration as a reality-first research engine that discovers high-signal repositories, scores extraction and PR opportunities, verifies claims beyond happy paths, runs continuously, and gets better from feedback.
+**Goal:** Build the next OpenClaw iteration as a reality-first research engine that starts from GitHub Trending, clones repositories directly for analysis, scores extraction and PR opportunities after understanding them, verifies claims beyond happy paths, runs continuously, and gets better from feedback.
 
 **Architecture:** The implementation is organized around a small set of explicit pipeline stages: discovery, repository intelligence, extraction, contribution evaluation, distillation, verification, runtime orchestration, and learning. The plan assumes implementation will happen in the OpenClaw repository, while this document is authored inside CodeNexus as the source-of-truth design handoff. The current workspace is CodeNexus, not OpenClaw; all source paths below refer to the target OpenClaw repository unless a task explicitly names CodeNexus files.
 
@@ -184,7 +184,7 @@ git add src/discovery/github-trending.ts src/discovery/discovery-runner.ts src/d
 git commit -m "feat: add github trending discovery stage"
 ```
 
-### Task 3: Add repo scoring
+### Task 3: Add post-analysis repository prioritization
 
 **Files:**
 - Create: `src/config/scoring.ts`
@@ -241,7 +241,7 @@ Expected: PASS
 
 ```bash
 git add src/config/scoring.ts src/domain/candidates/repo-score.ts tests/domain/repo-score.test.ts
-git commit -m "feat: add repository relevance scoring"
+git commit -m "feat: add post-analysis repository prioritization"
 ```
 
 ### Task 4: Add clone/update cache and repository inspection
@@ -967,7 +967,7 @@ Expected: discovery -> scoring -> extraction -> verification -> checkpoint compl
 
 ## Delivery Notes
 
-- Keep the first release narrow: GitHub Trending only, limited budgets, explicit logs.
+- Keep the first release narrow: GitHub Trending only, clone + analyze directly, limited budgets, explicit logs.
 - Do not implement autonomous PR submission until repo scoring, PR scoring, and first-principles verification are all in place.
 - In the first shipping version, PR handling stays in proposal mode with a human approval gate.
 - Treat accepted and rejected PRs as training data for the next iteration.
