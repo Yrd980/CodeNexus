@@ -19,6 +19,7 @@ REVIEW_SCRIPT = REPO_ROOT / "scripts" / "agentic_review_loop.py"
 LONG_RUN_SCRIPT = Path(__file__).resolve()
 DEFAULT_CADENCE = ("daily", "weekly", "monthly")
 DEFAULT_SLEEP_SECONDS = 900
+HEARTBEAT_INTERVAL_SECONDS = 30
 
 
 def _utc_now() -> str:
@@ -56,6 +57,36 @@ def _unique_text(items: list[str]) -> list[str]:
         seen.add(item)
         ordered.append(item)
     return ordered
+
+
+def _write_pid_file(runtime_root: Path) -> None:
+    payload = {
+        "pid": os.getpid(),
+        "started_at": _utc_now(),
+        "argv": sys.argv,
+    }
+    _write_json(runtime_root / "worker.pid.json", payload)
+
+
+def _write_heartbeat(
+    runtime_root: Path,
+    *,
+    phase: str,
+    batch_index: int | None = None,
+    since: str | None = None,
+    sleep_seconds: int | None = None,
+    note: str | None = None,
+) -> None:
+    payload = {
+        "pid": os.getpid(),
+        "updated_at": _utc_now(),
+        "phase": phase,
+        "batch_index": batch_index,
+        "since": since,
+        "sleep_seconds": sleep_seconds,
+        "note": note,
+    }
+    _write_json(runtime_root / "heartbeat.json", payload)
 
 
 def _load_state(path: Path, cadence_order: tuple[str, ...]) -> dict[str, Any]:
@@ -382,6 +413,28 @@ def _write_state(state_path: Path, state: dict[str, Any]) -> None:
     _write_json(state_path, state)
 
 
+def _sleep_with_heartbeat(
+    runtime_root: Path,
+    *,
+    total_seconds: int,
+    batch_index: int,
+    next_since: str,
+) -> None:
+    remaining = max(total_seconds, 0)
+    while remaining > 0:
+        step = min(HEARTBEAT_INTERVAL_SECONDS, remaining)
+        _write_heartbeat(
+            runtime_root,
+            phase="sleeping",
+            batch_index=batch_index,
+            since=next_since,
+            sleep_seconds=remaining,
+            note="waiting for next batch",
+        )
+        time.sleep(step)
+        remaining -= step
+
+
 def _maybe_restart_after_update(update_result: dict[str, Any], *, should_continue: bool) -> None:
     if not should_continue:
         return
@@ -420,6 +473,8 @@ def main() -> int:
 
     runtime_root.mkdir(parents=True, exist_ok=True)
     clone_root.mkdir(parents=True, exist_ok=True)
+    _write_pid_file(runtime_root)
+    _write_heartbeat(runtime_root, phase="booting", note="starting long-run loop")
 
     state_path = runtime_root / "state.json"
     history_path = runtime_root / "checkpoints.jsonl"
@@ -430,6 +485,13 @@ def main() -> int:
     while args.forever or batches_run < args.max_batches:
         since = _next_since(state, cadence_order)
         batch_index = int(state.get("completed_batches", 0)) + int(state.get("failed_batches", 0)) + 1
+        _write_heartbeat(
+            runtime_root,
+            phase="running-batch",
+            batch_index=batch_index,
+            since=since,
+            note="running trending pipeline and repo review",
+        )
         checkpoint, manifest, review = _run_batch(
             batch_index=batch_index,
             runtime_root=runtime_root,
@@ -469,6 +531,13 @@ def main() -> int:
         _write_json(runtime_root / "latest-checkpoint.json", checkpoint)
         _append_jsonl(history_path, checkpoint)
         _write_state(state_path, state)
+        _write_heartbeat(
+            runtime_root,
+            phase="batch-complete",
+            batch_index=batch_index,
+            since=since,
+            note="batch completed and checkpoint written",
+        )
 
         print(
             json.dumps(
@@ -492,13 +561,27 @@ def main() -> int:
         should_continue = args.forever or batches_run < args.max_batches
 
         if not checkpoint["success"] and not args.forever:
+            _write_heartbeat(
+                runtime_root,
+                phase="stopped",
+                batch_index=batch_index,
+                since=since,
+                note="exiting after failed finite batch",
+            )
             return 1
 
         _maybe_restart_after_update(update_result, should_continue=should_continue)
 
         if should_continue and args.sleep_seconds > 0:
-            time.sleep(args.sleep_seconds)
+            next_since = _next_since(state, cadence_order)
+            _sleep_with_heartbeat(
+                runtime_root,
+                total_seconds=args.sleep_seconds,
+                batch_index=batch_index,
+                next_since=next_since,
+            )
 
+    _write_heartbeat(runtime_root, phase="stopped", note="long-run loop exited cleanly")
     return 0
 
 

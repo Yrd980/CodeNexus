@@ -13,6 +13,7 @@ CodeNexus 现在主要保留两类东西：
 
 - `scripts/agentic_review_loop.py`：主动扫描 `.prompts/`、`scripts/` 和指定产物目录，生成 review queue
 - `scripts/openclaw_long_run.py`：按批次持续跑 Trending、写 checkpoint、批次间自更新
+- `scripts/openclaw_watchdog.py`：持续监视 long-run worker，挂掉或心跳过期时自动拉起
 
 也就是说，它更像一套“怎么研究代码、怎么判断价值、怎么沉淀结果”的操作系统，而不是一堆老题材代码包的展厅。
 
@@ -61,6 +62,9 @@ python scripts/openclaw_long_run.py --max-batches 1 --sleep-seconds 0
 # 进入长跑模式
 python scripts/openclaw_long_run.py --forever --sleep-seconds 900
 
+# 进入 watchdog 托管模式
+python scripts/openclaw_watchdog.py --runtime-root runtime/openclaw-live --sleep-seconds 600 --limit 5
+
 # 审查某个产物目录
 ./scripts/validate.sh ./research/my-finding
 ```
@@ -72,6 +76,10 @@ python scripts/openclaw_long_run.py --forever --sleep-seconds 900
 - `latest-manifest.json`
 - `latest-review.json`
 - `latest-checkpoint.json`
+- `heartbeat.json`
+- `worker.pid.json`
+- `watchdog.json`
+- `watchdog-events.jsonl`
 - `batches/<timestamp>-<since>/...`
 
 ## 当前取向
