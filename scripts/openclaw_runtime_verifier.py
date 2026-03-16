@@ -15,6 +15,9 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.parse import urljoin
+from urllib.request import Request, urlopen
 
 READY_PATTERNS: dict[str, re.Pattern[str]] = {
     "ready": re.compile(r"\bready\b", re.IGNORECASE),
@@ -23,6 +26,18 @@ READY_PATTERNS: dict[str, re.Pattern[str]] = {
     "vite": re.compile(r"\bvite v\d", re.IGNORECASE),
     "local_url": re.compile(r"\blocal:\s+https?://", re.IGNORECASE),
     "started": re.compile(r"\bserver\b.*\bstarted\b|\bstarted\b.*\bserver\b", re.IGNORECASE),
+}
+HTTP_URL_PATTERN = re.compile(r"https?://[^\s)]+", re.IGNORECASE)
+NODE_SCRIPT_CALL_PATTERN = re.compile(
+    r"^(?P<manager>npm|pnpm|yarn|bun)\s+(?:(?:run)\s+)?(?P<script>[A-Za-z0-9:_-]+)(?:\s|$)",
+    re.IGNORECASE,
+)
+SIDE_EFFECT_PATTERNS: dict[str, re.Pattern[str]] = {
+    "sync": re.compile(r"\bsync\b|rsync", re.IGNORECASE),
+    "publish_release": re.compile(r"\bpublish\b|\brelease\b|\bnp\b", re.IGNORECASE),
+    "deploy": re.compile(r"\bdeploy\b|\bvercel\b|\bnetlify\b|\bgcloud\b|\baws\b", re.IGNORECASE),
+    "restart": re.compile(r"\brestart\b|\bworker:restart\b|\bsystemctl\b", re.IGNORECASE),
+    "home_state": re.compile(r"~\/|/home/[^\s/]+/|\.claude/plugins|marketplaces/", re.IGNORECASE),
 }
 
 
@@ -61,6 +76,57 @@ def _parse_iso8601(value: str | None) -> datetime | None:
         return datetime.fromisoformat(value)
     except ValueError:
         return None
+
+
+def _extract_urls(text: str) -> list[str]:
+    urls: list[str] = []
+    for raw in HTTP_URL_PATTERN.findall(text):
+        url = raw.rstrip(".,);]")
+        if url not in urls:
+            urls.append(url)
+    return urls
+
+
+def _probe_http_boundary(base_url: str) -> dict[str, Any]:
+    invalid_url = urljoin(base_url if base_url.endswith("/") else f"{base_url}/", "__openclaw_invalid__")
+    request = Request(
+        invalid_url,
+        headers={
+            "User-Agent": "OpenClaw-Runtime-Verifier/1.0",
+            "Accept": "*/*",
+        },
+    )
+    try:
+        with urlopen(request, timeout=5) as response:
+            status_code = response.getcode()
+            body_excerpt = _trim_text(response.read(512), limit=400)
+        return {
+            "url": base_url,
+            "invalid_url": invalid_url,
+            "ok": False,
+            "outcome": "unexpected-2xx" if 200 <= status_code < 300 else "unexpected-response",
+            "status_code": status_code,
+            "body_excerpt": body_excerpt,
+        }
+    except HTTPError as exc:
+        body_excerpt = _trim_text(exc.read(512), limit=400)
+        return {
+            "url": base_url,
+            "invalid_url": invalid_url,
+            "ok": True,
+            "outcome": "explicit-4xx" if 400 <= exc.code < 500 else "explicit-5xx",
+            "status_code": exc.code,
+            "body_excerpt": body_excerpt,
+        }
+    except URLError as exc:
+        return {
+            "url": base_url,
+            "invalid_url": invalid_url,
+            "ok": False,
+            "outcome": "no-response",
+            "status_code": None,
+            "body_excerpt": str(exc.reason),
+        }
 
 
 def _command_env() -> dict[str, str]:
@@ -146,6 +212,7 @@ def _run_observed_command(argv: list[str], *, cwd: Path, observe_seconds: int) -
     observed_alive = False
     timed_out = False
     returncode: int | None = None
+    http_probe: dict[str, Any] | None = None
 
     try:
         stdout, stderr = process.communicate(timeout=observe_seconds)
@@ -155,6 +222,9 @@ def _run_observed_command(argv: list[str], *, cwd: Path, observe_seconds: int) -
         observed_alive = process.poll() is None
         stdout = _trim_text(exc.stdout, limit=10000)
         stderr = _trim_text(exc.stderr, limit=10000)
+        urls = _extract_urls("\n".join(part for part in [stdout, stderr] if part))
+        if observed_alive and urls:
+            http_probe = _probe_http_boundary(urls[0])
         _terminate_process_tree(process)
         try:
             tail_stdout, tail_stderr = process.communicate(timeout=5)
@@ -193,6 +263,7 @@ def _run_observed_command(argv: list[str], *, cwd: Path, observe_seconds: int) -
         "observed_alive": observed_alive,
         "ready_signals": ready_hits,
         "status": status,
+        "http_probe": http_probe,
         "stdout_excerpt": _trim_text(stdout, limit=4000),
         "stderr_excerpt": _trim_text(stderr, limit=4000),
     }
@@ -215,6 +286,56 @@ def _git_status_lines(repo_dir: Path) -> list[str]:
         return []
     text = result["stdout_excerpt"]
     return [line for line in text.splitlines() if line.strip()]
+
+
+def _load_package_scripts(repo_dir: Path) -> dict[str, str]:
+    package_json_path = repo_dir / "package.json"
+    if not package_json_path.exists():
+        return {}
+    try:
+        payload = json.loads(package_json_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    scripts = payload.get("scripts")
+    if not isinstance(scripts, dict):
+        return {}
+    return {key: value for key, value in scripts.items() if isinstance(value, str)}
+
+
+def _resolve_node_script_chain(command_text: str, repo_dir: Path, *, max_depth: int = 4) -> list[dict[str, str]]:
+    scripts = _load_package_scripts(repo_dir)
+    chain: list[dict[str, str]] = []
+    current = command_text.strip()
+    seen: set[str] = set()
+    for _ in range(max_depth):
+        match = NODE_SCRIPT_CALL_PATTERN.match(current)
+        if not match:
+            break
+        script_name = match.group("script")
+        if script_name in seen:
+            break
+        body = scripts.get(script_name)
+        if not body:
+            break
+        chain.append({"script": script_name, "body": body})
+        seen.add(script_name)
+        current = body.strip()
+    return chain
+
+
+def _detect_side_effect_risk(command_text: str, repo_dir: Path) -> dict[str, Any]:
+    chain = _resolve_node_script_chain(command_text, repo_dir)
+    texts = [command_text, *[item["body"] for item in chain]]
+    hits = [
+        label
+        for label, pattern in SIDE_EFFECT_PATTERNS.items()
+        if any(pattern.search(text) for text in texts)
+    ]
+    return {
+        "risky": bool(hits),
+        "hits": hits,
+        "resolved_scripts": chain,
+    }
 
 
 def _install_command(profile: dict[str, Any], repo_dir: Path) -> list[str] | None:
@@ -298,8 +419,35 @@ def _select_runtime_command(repo: dict[str, Any]) -> tuple[str | None, str]:
     return None, "blocked"
 
 
-def _build_assumption_break(repo: dict[str, Any], runtime_done: bool) -> dict[str, Any]:
+def _build_assumption_break(
+    repo: dict[str, Any],
+    *,
+    runtime_done: bool,
+    runtime_result: dict[str, Any] | None,
+) -> dict[str, Any]:
     notes: list[str] = []
+    http_probe = (runtime_result or {}).get("http_probe") if runtime_result else None
+    if runtime_done and http_probe and http_probe.get("ok"):
+        status_code = http_probe.get("status_code")
+        notes.append(
+            f"Invalid-path probe returned an explicit boundary response at {http_probe['invalid_url']} "
+            f"with status {status_code}."
+        )
+        return {
+            "done": True,
+            "status": "done",
+            "notes": notes,
+        }
+    if runtime_done and http_probe and not http_probe.get("ok"):
+        notes.append(
+            f"Invalid-path probe did not get a clear boundary response: {http_probe.get('outcome')}."
+        )
+        notes.append("A human should inspect whether the live path hides routing or error-boundary problems.")
+        return {
+            "done": False,
+            "status": "todo",
+            "notes": notes,
+        }
     if not runtime_done:
         notes.append("Runtime truth is still missing or blocked, so assumption-break checks stay downstream.")
     else:
@@ -384,6 +532,28 @@ def _evaluate_result(
         blocking_decision = "stop"
         gaps.append("Dependencies could not be prepared on the smallest honest path.")
         immediate_actions.append("Inspect install failure output and decide whether the repo or local toolchain is at fault.")
+    elif runtime_result and runtime_result["status"] == "blocked-side-effects":
+        runtime_truth = {
+            "done": False,
+            "status": "blocked-side-effects",
+            "notes": [
+                "Startup candidate performs side effects, so OpenClaw refused to execute it as runtime truth.",
+                "Risk markers: " + ", ".join(runtime_result.get("safety", {}).get("hits", [])),
+            ],
+            "head": repo_head,
+            "install": install_result,
+            "command": runtime_result,
+        }
+        if runtime_result.get("fallback_command"):
+            fallback = runtime_result["fallback_command"]
+            if fallback.get("ok"):
+                runtime_truth["notes"].append("Safe build sanity succeeded, but startup truth is still unproven.")
+            else:
+                runtime_truth["notes"].append("Even the safe build fallback failed.")
+        overall_assessment = "weak"
+        blocking_decision = "stop"
+        gaps.append("Startup path is side-effectful; no safe local runtime path is proven yet.")
+        immediate_actions.append("Find a side-effect-free local startup path or explicit dry-run entrypoint.")
     else:
         runtime_done = runtime_result["status"] in {"ready", "running"}
         runtime_truth = {
@@ -408,14 +578,21 @@ def _evaluate_result(
         if runtime_done:
             overall_assessment = "partial"
             blocking_decision = "research-more"
-            immediate_actions.append("Run one assumption-break check against the live path.")
+            if runtime_result.get("http_probe", {}).get("ok"):
+                immediate_actions.append("Move to portability checks; the HTTP invalid-path boundary was explicit.")
+            else:
+                immediate_actions.append("Run one assumption-break check against the live path.")
             immediate_actions.append("Check portability against a foreign context before extraction or PR work.")
         else:
             overall_assessment = "weak"
             blocking_decision = "stop"
             immediate_actions.append("Read the runtime failure and decide whether the repo should be demoted or retried.")
 
-    assumption_break = _build_assumption_break(repo, runtime_done)
+    assumption_break = _build_assumption_break(
+        repo,
+        runtime_done=runtime_done,
+        runtime_result=runtime_result,
+    )
     portability = _build_portability(repo, worktree_lines=worktree_lines)
 
     if not gaps and not runtime_done:
@@ -494,6 +671,33 @@ def verify_repo(
                 runtime_result=None,
                 worktree_lines=_git_status_lines(repo_dir),
             )
+
+    safety = _detect_side_effect_risk(command_text, repo_dir)
+    if safety["risky"]:
+        fallback_result: dict[str, Any] | None = None
+        build_commands = profile.get("build_commands") or []
+        if build_commands and build_commands[0] != command_text:
+            fallback_argv = shlex.split(build_commands[0])
+            if _command_missing(fallback_argv) is None:
+                fallback_result = _run_finite_command(
+                    fallback_argv,
+                    cwd=repo_dir,
+                    timeout_seconds=install_timeout_seconds,
+                )
+        return _evaluate_result(
+            repo,
+            repo_head=repo_head,
+            install_result=install_result,
+            runtime_result={
+                "status": "blocked-side-effects",
+                "kind": command_kind,
+                "argv": argv,
+                "cwd": str(repo_dir),
+                "safety": safety,
+                "fallback_command": fallback_result,
+            },
+            worktree_lines=_git_status_lines(repo_dir),
+        )
 
     runtime_result = _run_observed_command(argv, cwd=repo_dir, observe_seconds=command_timeout_seconds)
     runtime_result["kind"] = command_kind
@@ -576,7 +780,7 @@ def run_runtime_verifier(
             summary["ready"] += 1
         elif runtime_status == "running":
             summary["running"] += 1
-        elif runtime_status == "blocked":
+        elif runtime_status.startswith("blocked"):
             summary["blocked"] += 1
         else:
             summary["failed"] += 1

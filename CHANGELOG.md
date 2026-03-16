@@ -11,6 +11,8 @@
 - 新增 `scripts/openclaw_runtime_verifier.py`，对 top candidates 执行最小 startup / build 路径，并写出 `latest-runtime-verification.json`
 - 批次结果现在会落到运行目录里，保留 `latest-manifest / latest-review / latest-checkpoint / state / checkpoints.jsonl`
 - 新增 `verification-memory.json`，同一 commit 在 cooldown 内不会被每批重复验证
+- runtime verifier 现在会拦住带同步/重启/本地状态写入的危险 startup，并在可用时退回 safe build sanity
+- runtime verifier 现在会对暴露 localhost URL 的服务打一枪无效路径，检查错误边界是不是显式的
 - long-run 现在会写 `heartbeat.json` 和 `worker.pid.json`，便于 watchdog 和外部监控读状态
 - 自更新健康检查升级为同时校验 `openclaw_trending_pipeline.py / agentic_review_loop.py / openclaw_runtime_verifier.py / openclaw_long_run.py`
 - Trending parser 过滤 sponsor 链接，单个仓库 sync 失败也不会拖垮整批

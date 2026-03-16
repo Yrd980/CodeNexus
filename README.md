@@ -97,6 +97,7 @@ python scripts/openclaw_watchdog.py --runtime-root runtime/openclaw-live --sleep
 - 让产物审查输出 backlog，而不是只输出 pass/fail
 - 让 OpenClaw 以批次 checkpoint 的方式长跑，并在批次之间 `git pull --ff-only`
 - 让 top candidates 真跑 runtime truth，而不是只把 `next_step` 写进 JSON
+- 遇到会 sync / restart / 写本地状态的危险 startup 时，先拦住再回退到更安全的 sanity path
 
 ## 参与
 
