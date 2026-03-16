@@ -16,6 +16,7 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TRENDING_SCRIPT = REPO_ROOT / "scripts" / "openclaw_trending_pipeline.py"
 REVIEW_SCRIPT = REPO_ROOT / "scripts" / "agentic_review_loop.py"
+RUNTIME_VERIFIER_SCRIPT = REPO_ROOT / "scripts" / "openclaw_runtime_verifier.py"
 LONG_RUN_SCRIPT = Path(__file__).resolve()
 DEFAULT_CADENCE = ("daily", "weekly", "monthly")
 DEFAULT_SLEEP_SECONDS = 900
@@ -104,6 +105,7 @@ def _load_state(path: Path, cadence_order: tuple[str, ...]) -> dict[str, Any]:
         "last_checkpoint": None,
         "last_manifest": None,
         "last_review": None,
+        "last_runtime_verification": None,
         "last_self_update": None,
         "last_error": None,
     }
@@ -215,6 +217,40 @@ def _run_repo_review(*, runtime_root: Path, batch_dir: Path) -> tuple[dict[str, 
     return review, result, review_path
 
 
+def _run_runtime_verifier(
+    *,
+    runtime_root: Path,
+    batch_dir: Path,
+    manifest_path: Path,
+) -> tuple[dict[str, Any], dict[str, Any], Path]:
+    verification_path = batch_dir / "runtime-verification.json"
+    argv = [
+        sys.executable,
+        str(RUNTIME_VERIFIER_SCRIPT),
+        "--manifest",
+        str(manifest_path),
+        "--runtime-root",
+        str(runtime_root),
+        "--output",
+        str(verification_path),
+        "--repo-limit",
+        "2",
+        "--cooldown-hours",
+        "12",
+    ]
+    result = _run_command(argv, cwd=REPO_ROOT)
+    if not result["ok"]:
+        raise RuntimeError(
+            "Runtime verifier failed: "
+            + (_trim_text(result["stderr"]) or _trim_text(result["stdout"]) or "unknown error")
+        )
+
+    _parse_json_from_stdout(result["stdout"])
+    verification = json.loads(verification_path.read_text(encoding="utf-8"))
+    _write_json(runtime_root / "latest-runtime-verification.json", verification)
+    return verification, result, verification_path
+
+
 def _healthcheck_scripts() -> dict[str, Any]:
     argv = [
         sys.executable,
@@ -222,6 +258,7 @@ def _healthcheck_scripts() -> dict[str, Any]:
         "py_compile",
         str(TRENDING_SCRIPT),
         str(REVIEW_SCRIPT),
+        str(RUNTIME_VERIFIER_SCRIPT),
         str(LONG_RUN_SCRIPT),
     ]
     result = _run_command(argv, cwd=REPO_ROOT)
@@ -280,17 +317,28 @@ def _build_checkpoint(
     batch_dir: Path,
     manifest_path: Path | None,
     review_path: Path | None,
+    verification_path: Path | None,
     manifest: dict[str, Any] | None,
     review: dict[str, Any] | None,
+    verification: dict[str, Any] | None,
     trending_command: dict[str, Any] | None,
     review_command: dict[str, Any] | None,
+    verification_command: dict[str, Any] | None,
     success: bool,
     error: str | None,
 ) -> dict[str, Any]:
     manifest = manifest or {}
     review = review or {}
+    verification = verification or {}
     learning_backlog = manifest.get("learning_backlog", {})
     runtime_context = manifest.get("runtime_context", {})
+    verification_results = verification.get("results", [])
+    next_actions = _unique_text(
+        [action for item in verification_results[:3] for action in item.get("immediate_actions", [])[:2]]
+        + [item["next_step"] for item in learning_backlog.get("verification_queue", [])][:3]
+        + [item["next_step"] for item in learning_backlog.get("priority_candidates", [])][:3]
+        + [item["next_action"] for item in review.get("next_wave", [])][:3]
+    )
 
     return {
         "generated_at": _utc_now(),
@@ -302,6 +350,7 @@ def _build_checkpoint(
         "batch_dir": str(batch_dir),
         "manifest_path": str(manifest_path) if manifest_path else None,
         "review_path": str(review_path) if review_path else None,
+        "runtime_verification_path": str(verification_path) if verification_path else None,
         "batch_summary": {
             "repo_count": len(manifest.get("repos", [])),
             "research_queue": learning_backlog.get("research_queue", []),
@@ -316,26 +365,26 @@ def _build_checkpoint(
             "summary": review.get("summary"),
             "next_wave": review.get("next_wave"),
         },
+        "runtime_verification": {
+            "summary": verification.get("summary"),
+            "top_results": [
+                {
+                    "full_name": item["full_name"],
+                    "runtime_status": item["runtime_truth"]["status"],
+                    "overall_assessment": item["overall_assessment"],
+                    "blocking_decision": item["blocking_decision"],
+                }
+                for item in verification_results[:5]
+            ],
+        },
         "cognition_updates": learning_backlog.get("cognition_updates", []),
         "runtime_notes": runtime_context.get("long_run_notes", []),
         "commands": {
             "trending_pipeline": _summarize_command(trending_command) if trending_command else None,
             "agentic_review": _summarize_command(review_command) if review_command else None,
+            "runtime_verifier": _summarize_command(verification_command) if verification_command else None,
         },
-        "next_actions": _unique_text(
-            [
-                item["next_step"]
-                for item in learning_backlog.get("verification_queue", [])
-            ][:3]
-            + [
-                item["next_step"]
-                for item in learning_backlog.get("priority_candidates", [])
-            ][:3]
-            + [
-                item["next_action"]
-                for item in review.get("next_wave", [])
-            ][:3]
-        ),
+        "next_actions": next_actions,
     }
 
 
@@ -353,12 +402,22 @@ def _run_batch(
 
     manifest: dict[str, Any] | None = None
     review: dict[str, Any] | None = None
+    verification: dict[str, Any] | None = None
     manifest_path: Path | None = None
     review_path: Path | None = None
+    verification_path: Path | None = None
     trending_command: dict[str, Any] | None = None
     review_command: dict[str, Any] | None = None
+    verification_command: dict[str, Any] | None = None
 
     try:
+        _write_heartbeat(
+            runtime_root,
+            phase="collecting-trending",
+            batch_index=batch_index,
+            since=since,
+            note="syncing trending repositories and facts",
+        )
         manifest, trending_command, manifest_path = _run_trending_batch(
             runtime_root=runtime_root,
             clone_root=clone_root,
@@ -367,9 +426,28 @@ def _run_batch(
             since=since,
             language=language,
         )
+        _write_heartbeat(
+            runtime_root,
+            phase="reviewing-protocol",
+            batch_index=batch_index,
+            since=since,
+            note="running agentic review on prompts and scripts",
+        )
         review, review_command, review_path = _run_repo_review(
             runtime_root=runtime_root,
             batch_dir=batch_dir,
+        )
+        _write_heartbeat(
+            runtime_root,
+            phase="verifying-runtime-truth",
+            batch_index=batch_index,
+            since=since,
+            note="executing top candidate startup paths",
+        )
+        verification, verification_command, verification_path = _run_runtime_verifier(
+            runtime_root=runtime_root,
+            batch_dir=batch_dir,
+            manifest_path=manifest_path,
         )
         checkpoint = _build_checkpoint(
             batch_index=batch_index,
@@ -378,10 +456,13 @@ def _run_batch(
             batch_dir=batch_dir,
             manifest_path=manifest_path,
             review_path=review_path,
+            verification_path=verification_path,
             manifest=manifest,
             review=review,
+            verification=verification,
             trending_command=trending_command,
             review_command=review_command,
+            verification_command=verification_command,
             success=True,
             error=None,
         )
@@ -393,10 +474,13 @@ def _run_batch(
             batch_dir=batch_dir,
             manifest_path=manifest_path,
             review_path=review_path,
+            verification_path=verification_path,
             manifest=manifest,
             review=review,
+            verification=verification,
             trending_command=trending_command,
             review_command=review_command,
+            verification_command=verification_command,
             success=False,
             error=str(exc),
         )
@@ -490,7 +574,7 @@ def main() -> int:
             phase="running-batch",
             batch_index=batch_index,
             since=since,
-            note="running trending pipeline and repo review",
+            note="running trending pipeline, review, and runtime verification",
         )
         checkpoint, manifest, review = _run_batch(
             batch_index=batch_index,
@@ -506,6 +590,7 @@ def main() -> int:
         state["last_checkpoint"] = checkpoint["checkpoint_path"]
         state["last_manifest"] = checkpoint["manifest_path"]
         state["last_review"] = checkpoint["review_path"]
+        state["last_runtime_verification"] = checkpoint["runtime_verification_path"]
         state["last_error"] = checkpoint["error"]
 
         if checkpoint["success"]:
@@ -549,6 +634,7 @@ def main() -> int:
                     "research_queue": checkpoint["batch_summary"]["research_queue"],
                     "extract_queue": checkpoint["batch_summary"]["extract_queue"],
                     "priority_candidates": checkpoint["batch_summary"]["priority_candidates"],
+                    "runtime_verification": checkpoint["runtime_verification"]["summary"],
                     "self_review": (review or {}).get("summary"),
                     "self_update": update_result.get("status"),
                     "updated": update_result.get("updated", False),

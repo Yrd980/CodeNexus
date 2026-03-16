@@ -606,7 +606,8 @@ def decide_repo_action(
     if signals["noise_hits"]:
         red_flags.append(f"Noise markers detected: {', '.join(signals['noise_hits'])}")
 
-    has_problem_fit = bool(signals["domain_keywords"] or signals["matched_batch_keywords"])
+    has_problem_fit = bool(signals["domain_keywords"])
+    has_batch_alignment = bool(signals["matched_batch_keywords"])
     has_migration_shape = bool(signals["transfer_keywords"] or signals["design_keywords"])
     has_real_entry = bool(signals["has_startup_path"] or signals["has_test_path"] or signals["has_ci"])
     has_high_signal = signals["signal_band"] == "high"
@@ -616,11 +617,15 @@ def decide_repo_action(
 
     if is_noise_repo:
         decision = "skip"
+    elif is_hype_only and signals["signal_band"] == "low":
+        decision = "skip"
     elif has_high_signal and has_real_entry and (has_problem_fit or has_migration_shape):
         decision = "research"
     elif has_problem_fit and has_real_entry:
         decision = "research"
     elif has_medium_signal and has_real_entry and (has_problem_fit or has_migration_shape):
+        decision = "extract-only"
+    elif has_batch_alignment and has_real_entry and not is_hype_only:
         decision = "extract-only"
     elif (has_problem_fit or has_migration_shape) and signals["has_readme"] and not is_hype_only:
         decision = "extract-only"
@@ -792,8 +797,18 @@ def summarize_batch_growth(repos: list[dict[str, Any]], *, batch_keywords: list[
         if repo["contribution_plan"]["interest_level"] == "candidate"
     ]
 
+    prioritized = sorted(
+        (repo for repo in repos if repo["recommended_action"] != "skip"),
+        key=lambda repo: (
+            0 if repo["recommended_action"] == "research" else 1,
+            {"high": 0, "medium": 1, "low": 2}[repo["signals"]["signal_band"]],
+            -repo["signals"]["composite_score"],
+            repo["full_name"],
+        ),
+    )
+
     verification_queue = []
-    for repo in repos:
+    for repo in prioritized:
         if repo["recommended_action"] == "skip":
             continue
         runtime_tasks = repo["verification_backlog"]["runtime_truth"]["tasks"]
@@ -811,8 +826,7 @@ def summarize_batch_growth(repos: list[dict[str, Any]], *, batch_keywords: list[
             "why": repo["action_reasons"][:3],
             "next_step": repo["verification_backlog"]["runtime_truth"]["tasks"][0],
         }
-        for repo in repos
-        if repo["recommended_action"] != "skip"
+        for repo in prioritized
     ][:5]
 
     return {

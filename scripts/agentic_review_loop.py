@@ -61,6 +61,7 @@ AGENTIC_PATTERNS = {
     "portability": r"\bportability\b",
     "hold": r"\bhold\b",
     "checkpoint": r"\bcheckpoint\b",
+    "runtime_supervision": r"\bwatchdog\b|\bheartbeat\b|\brestart\b|\bmonitor(?:ing)?\b|\bsupervis(?:e|ion)\b",
 }
 
 VERIFICATION_PATTERNS = {
@@ -184,7 +185,7 @@ def _review_from_signals(
 
 
 def review_file(root: Path, path: Path) -> ReviewItem:
-    text = _read_text(path)
+    text = f"{_relpath(root, path)}\n{_read_text(path)}"
     return _review_from_signals(
         rel_path=_relpath(root, path),
         kind=_kind_for(path),

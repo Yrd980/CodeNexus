@@ -14,6 +14,7 @@ CodeNexus 现在主要保留两类东西：
 - `scripts/agentic_review_loop.py`：主动扫描 `.prompts/`、`scripts/` 和指定产物目录，生成 review queue
 - `scripts/openclaw_long_run.py`：按批次持续跑 Trending、写 checkpoint、批次间自更新
 - `scripts/openclaw_watchdog.py`：持续监视 long-run worker，挂掉或心跳过期时自动拉起
+- `scripts/openclaw_runtime_verifier.py`：对 top candidates 真跑 startup / build 路径，落下 runtime truth 结论
 
 也就是说，它更像一套“怎么研究代码、怎么判断价值、怎么沉淀结果”的操作系统，而不是一堆老题材代码包的展厅。
 
@@ -59,6 +60,9 @@ python scripts/openclaw_trending_pipeline.py --limit 5
 # 跑一次完整批次循环
 python scripts/openclaw_long_run.py --max-batches 1 --sleep-seconds 0
 
+# 只跑 runtime truth 执行器
+python scripts/openclaw_runtime_verifier.py --manifest runtime/openclaw/latest-manifest.json --runtime-root runtime/openclaw --output runtime/openclaw/latest-runtime-verification.json
+
 # 进入长跑模式
 python scripts/openclaw_long_run.py --forever --sleep-seconds 900
 
@@ -75,11 +79,13 @@ python scripts/openclaw_watchdog.py --runtime-root runtime/openclaw-live --sleep
 - `checkpoints.jsonl`
 - `latest-manifest.json`
 - `latest-review.json`
+- `latest-runtime-verification.json`
 - `latest-checkpoint.json`
 - `heartbeat.json`
 - `worker.pid.json`
 - `watchdog.json`
 - `watchdog-events.jsonl`
+- `verification-memory.json`
 - `batches/<timestamp>-<since>/...`
 
 ## 当前取向
@@ -90,6 +96,7 @@ python scripts/openclaw_watchdog.py --runtime-root runtime/openclaw-live --sleep
 - 把静态规范继续推成主动 review loop
 - 让产物审查输出 backlog，而不是只输出 pass/fail
 - 让 OpenClaw 以批次 checkpoint 的方式长跑，并在批次之间 `git pull --ff-only`
+- 让 top candidates 真跑 runtime truth，而不是只把 `next_step` 写进 JSON
 
 ## 参与
 

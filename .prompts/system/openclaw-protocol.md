@@ -22,11 +22,12 @@
 5. 形成 evidence manifest
 6. 给出下一步动作：research / extract-only / skip
 7. 生成 verification backlog
-8. 如有必要，只生成 contribution hypothesis，状态固定为 hold
-9. 运行 agentic review loop，主动审查 prompt 和脚本本身
-10. 批次结束后写 checkpoint 和历史记录
-11. 批次之间做 `git pull --ff-only` 自更新，并跑脚本健康检查
-12. 如果代码有更新，下一个批次必须从新代码继续，而不是拿旧进程硬跑
+8. 对 top candidates 执行最小 runtime truth，记录 ready / running / blocked / failed
+9. 如有必要，只生成 contribution hypothesis，状态固定为 hold
+10. 运行 agentic review loop，主动审查 prompt 和脚本本身
+11. 批次结束后写 checkpoint 和历史记录
+12. 批次之间做 `git pull --ff-only` 自更新，并跑脚本健康检查
+13. 如果代码有更新，下一个批次必须从新代码继续，而不是拿旧进程硬跑
 ```
 
 ## 动作定义
@@ -47,6 +48,7 @@
 
 - 哪些仓库进入了 `research`
 - 哪些仓库只适合 `extract-only`
+- 哪些 top candidates 已经拿到了 runtime truth，哪些只是 blocked / failed
 - 哪些 PR 假设一直停在 `hold`
 - 哪些验证计划后来证明当初理解错了
 - 哪些 prompt / script 已经变成静态负担，应该重写或归档

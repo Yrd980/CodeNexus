@@ -8,9 +8,11 @@
 
 - 新增 `scripts/openclaw_long_run.py`，把 Trending 批次、repo review、checkpoint、自更新串成可长跑 loop
 - 新增 `scripts/openclaw_watchdog.py`，监视 long-run worker，掉线或心跳过期时自动重启
+- 新增 `scripts/openclaw_runtime_verifier.py`，对 top candidates 执行最小 startup / build 路径，并写出 `latest-runtime-verification.json`
 - 批次结果现在会落到运行目录里，保留 `latest-manifest / latest-review / latest-checkpoint / state / checkpoints.jsonl`
+- 新增 `verification-memory.json`，同一 commit 在 cooldown 内不会被每批重复验证
 - long-run 现在会写 `heartbeat.json` 和 `worker.pid.json`，便于 watchdog 和外部监控读状态
-- 自更新健康检查升级为同时校验 `openclaw_trending_pipeline.py / agentic_review_loop.py / openclaw_long_run.py`
+- 自更新健康检查升级为同时校验 `openclaw_trending_pipeline.py / agentic_review_loop.py / openclaw_runtime_verifier.py / openclaw_long_run.py`
 - Trending parser 过滤 sponsor 链接，单个仓库 sync 失败也不会拖垮整批
 
 ## [0.2.0] - 2026-03-16
