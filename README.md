@@ -12,6 +12,7 @@ CodeNexus 现在主要保留两类东西：
 另外它现在多了一条主动审稿入口：
 
 - `scripts/agentic_review_loop.py`：主动扫描 `.prompts/`、`scripts/` 和指定产物目录，生成 review queue
+- `scripts/openclaw_long_run.py`：按批次持续跑 Trending、写 checkpoint、批次间自更新
 
 也就是说，它更像一套“怎么研究代码、怎么判断价值、怎么沉淀结果”的操作系统，而不是一堆老题材代码包的展厅。
 
@@ -54,9 +55,24 @@ python scripts/agentic_review_loop.py
 # 跑 Trending 事实采集
 python scripts/openclaw_trending_pipeline.py --limit 5
 
+# 跑一次完整批次循环
+python scripts/openclaw_long_run.py --max-batches 1 --sleep-seconds 0
+
+# 进入长跑模式
+python scripts/openclaw_long_run.py --forever --sleep-seconds 900
+
 # 审查某个产物目录
 ./scripts/validate.sh ./research/my-finding
 ```
+
+长跑输出默认写到 `runtime/openclaw/`，其中会保留：
+
+- `state.json`
+- `checkpoints.jsonl`
+- `latest-manifest.json`
+- `latest-review.json`
+- `latest-checkpoint.json`
+- `batches/<timestamp>-<since>/...`
 
 ## 当前取向
 
@@ -65,6 +81,7 @@ python scripts/openclaw_trending_pipeline.py --limit 5
 - 把证据、动作、验证 backlog 明确分开
 - 把静态规范继续推成主动 review loop
 - 让产物审查输出 backlog，而不是只输出 pass/fail
+- 让 OpenClaw 以批次 checkpoint 的方式长跑，并在批次之间 `git pull --ff-only`
 
 ## 参与
 

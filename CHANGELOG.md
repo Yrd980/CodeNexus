@@ -2,6 +2,15 @@
 
 记录 CodeNexus 作为“研究协议仓”的关键变化。
 
+## [0.3.0] - 2026-03-16
+
+### 长跑
+
+- 新增 `scripts/openclaw_long_run.py`，把 Trending 批次、repo review、checkpoint、自更新串成可长跑 loop
+- 批次结果现在会落到运行目录里，保留 `latest-manifest / latest-review / latest-checkpoint / state / checkpoints.jsonl`
+- 自更新健康检查升级为同时校验 `openclaw_trending_pipeline.py / agentic_review_loop.py / openclaw_long_run.py`
+- Trending parser 过滤 sponsor 链接，单个仓库 sync 失败也不会拖垮整批
+
 ## [0.2.0] - 2026-03-16
 
 ### 收缩

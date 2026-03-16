@@ -48,23 +48,38 @@ STOPWORDS = {
 
 CURRENT_SIGNAL_DOMAINS = {
     "agent",
+    "agents",
     "api",
+    "assistant",
+    "assistants",
     "automation",
     "browser",
     "cache",
+    "claude",
     "code",
+    "coding",
     "collaboration",
     "context",
+    "copilot",
     "eval",
+    "evaluation",
     "inference",
     "knowledge",
+    "llm",
     "memory",
+    "mcp",
+    "model",
     "multimodal",
     "orchestration",
+    "plugin",
+    "plugins",
     "prompt",
     "queue",
+    "rag",
     "retrieval",
     "retry",
+    "session",
+    "sessions",
     "tool",
     "tools",
     "workflow",
@@ -74,10 +89,17 @@ TRANSFERABILITY_HINTS = {
     "adapter",
     "cli",
     "client",
+    "extension",
     "integration",
     "library",
     "middleware",
+    "plugin",
+    "plugins",
+    "protocol",
     "sdk",
+    "service",
+    "storage",
+    "sync",
     "template",
     "tooling",
     "workflow",
@@ -86,17 +108,42 @@ TRANSFERABILITY_HINTS = {
 DESIGN_HINTS = {
     "cache",
     "concurrency",
+    "compression",
     "config",
     "error",
+    "graph",
+    "index",
+    "memory",
     "pipeline",
     "protocol",
     "queue",
     "reliability",
     "retry",
     "schema",
+    "session",
     "state",
+    "sync",
     "workflow",
 }
+
+HYPE_MARKERS = (
+    "predict anything",
+    "universal",
+    "all-in-one",
+    "ultimate",
+    "best ever",
+)
+
+NOISE_MARKERS = (
+    "awesome",
+    "curated list",
+    "roadmap",
+    "tutorial",
+    "course",
+    "interview",
+    "leetcode",
+    "cheatsheet",
+)
 
 DOCKER_CONTEXT_FILES = (
     "Dockerfile",
@@ -179,7 +226,13 @@ def parse_trending_html(html: str) -> list[TrendingRepo]:
     article_pattern = re.compile(r"<article\b[^>]*>(.*?)</article>", re.IGNORECASE | re.DOTALL)
 
     for article in article_pattern.findall(html):
-        href_match = re.search(r'href="/([^"/]+/[^"/]+)"', article)
+        href_match = re.search(
+            r"<h2\b[^>]*>.*?href=\"/([^\"/]+/[^\"/]+)\"",
+            article,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if not href_match:
+            href_match = re.search(r'href="/([^"/]+/[^"/]+)"', article)
         if not href_match:
             continue
 
@@ -192,6 +245,9 @@ def parse_trending_html(html: str) -> list[TrendingRepo]:
         stars_today_match = re.search(r"([0-9][0-9,]*)\s+stars today", article, re.IGNORECASE)
 
         full_name = href_match.group(1).strip()
+        if full_name.startswith("sponsors/"):
+            continue
+
         repos.append(
             {
                 "full_name": full_name,
@@ -360,8 +416,12 @@ def extract_readme_summary(repo_dir: Path) -> str | None:
                 continue
             if "[![][" in paragraph:
                 continue
+            if paragraph in {"---", "+++"}:
+                continue
             cleaned = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1", paragraph)
             cleaned = re.sub(r"\s+", " ", cleaned).strip()
+            if re.fullmatch(r"[-=*_`~]{3,}", cleaned):
+                continue
             if re.fullmatch(
                 r"(english|中文|japanese|español|français|deutsch)"
                 r"(\s*/\s*(english|中文|japanese|español|français|deutsch))+",
@@ -383,6 +443,11 @@ def _tokenize_keywords(*parts: str | None) -> list[str]:
         if token not in STOPWORDS and not token.isdigit() and len(token) >= 3
     ]
     return _unique(filtered)[:8]
+
+
+def _find_phrase_hits(text: str, phrases: tuple[str, ...]) -> list[str]:
+    lowered = text.lower()
+    return [phrase for phrase in phrases if phrase in lowered]
 
 
 def derive_batch_keywords(repos: list[TrendingRepo]) -> list[str]:
@@ -410,13 +475,26 @@ def collect_repo_signals(
     repo_keywords: list[str],
     batch_keywords: list[str] | None = None,
 ) -> dict[str, Any]:
-    keyword_set = set(repo_keywords)
+    name_keywords = _tokenize_keywords(repo.get("full_name"))
+    summary_keywords = _tokenize_keywords(summary)
+    keyword_set = set(repo_keywords) | set(name_keywords) | set(summary_keywords)
     matched_batch_keywords = [
         keyword for keyword in (batch_keywords or []) if keyword in keyword_set
     ]
     domain_keywords = sorted(keyword_set & CURRENT_SIGNAL_DOMAINS)
     transfer_keywords = sorted(keyword_set & TRANSFERABILITY_HINTS)
     design_keywords = sorted(keyword_set & DESIGN_HINTS)
+    combined_text = " ".join(
+        part
+        for part in (
+            repo.get("full_name"),
+            repo.get("description"),
+            summary,
+        )
+        if part
+    )
+    hype_hits = _find_phrase_hits(combined_text, HYPE_MARKERS)
+    noise_hits = _find_phrase_hits(combined_text, NOISE_MARKERS)
 
     stars_today = repo.get("stars_today") or 0
     if stars_today >= 200:
@@ -426,12 +504,49 @@ def collect_repo_signals(
     else:
         trend_signal = "light"
 
+    positive_score = (
+        min(len(domain_keywords), 4) * 3
+        + min(len(transfer_keywords), 3) * 2
+        + min(len(design_keywords), 3)
+        + (2 if profile["startup_commands"] else 0)
+        + (1 if profile["build_commands"] else 0)
+        + (1 if profile["test_commands"] else 0)
+        + (1 if profile["has_ci"] else 0)
+        + (2 if trend_signal == "strong" else 1 if trend_signal == "medium" else 0)
+        + (1 if summary else 0)
+    )
+    negative_score = (
+        len(hype_hits) * 2
+        + len(noise_hits) * 3
+        + (2 if profile["needs_external_services"] else 0)
+        + (1 if profile["repo_shape"] == "monorepo" else 0)
+        + (1 if len(profile["ecosystems"]) > 1 else 0)
+        + (1 if not profile["has_ci"] else 0)
+        + (1 if not profile["test_commands"] else 0)
+    )
+    composite_score = positive_score - negative_score
+
+    if composite_score >= 10:
+        signal_band = "high"
+    elif composite_score >= 6:
+        signal_band = "medium"
+    else:
+        signal_band = "low"
+
     return {
         "trend_signal": trend_signal,
+        "signal_band": signal_band,
+        "positive_score": positive_score,
+        "negative_score": negative_score,
+        "composite_score": composite_score,
         "matched_batch_keywords": matched_batch_keywords,
+        "name_keywords": name_keywords,
+        "summary_keywords": summary_keywords,
         "domain_keywords": domain_keywords,
         "transfer_keywords": transfer_keywords,
         "design_keywords": design_keywords,
+        "hype_hits": hype_hits,
+        "noise_hits": noise_hits,
         "has_startup_path": bool(profile["startup_commands"]),
         "has_build_path": bool(profile["build_commands"]),
         "has_test_path": bool(profile["test_commands"]),
@@ -460,6 +575,8 @@ def decide_repo_action(
         reasons.append(f"Shows transferable surfaces: {', '.join(signals['transfer_keywords'])}")
     if signals["design_keywords"]:
         reasons.append(f"Shows design depth hints: {', '.join(signals['design_keywords'])}")
+    if signals["signal_band"] != "low":
+        reasons.append(f"Signal band is {signals['signal_band']}")
     if signals["has_startup_path"]:
         reasons.append(f"Has startup path: {profile['startup_commands'][0]}")
     if signals["has_test_path"]:
@@ -484,14 +601,28 @@ def decide_repo_action(
         red_flags.append("Needs external services for realistic verification")
     if signals["is_monorepo"]:
         red_flags.append("Monorepo extraction will require boundary discipline")
+    if signals["hype_hits"]:
+        red_flags.append(f"Hype-heavy wording detected: {', '.join(signals['hype_hits'])}")
+    if signals["noise_hits"]:
+        red_flags.append(f"Noise markers detected: {', '.join(signals['noise_hits'])}")
 
     has_problem_fit = bool(signals["domain_keywords"] or signals["matched_batch_keywords"])
     has_migration_shape = bool(signals["transfer_keywords"] or signals["design_keywords"])
     has_real_entry = bool(signals["has_startup_path"] or signals["has_test_path"] or signals["has_ci"])
+    has_high_signal = signals["signal_band"] == "high"
+    has_medium_signal = signals["signal_band"] == "medium"
+    is_hype_only = bool(signals["hype_hits"]) and not (has_problem_fit or has_migration_shape)
+    is_noise_repo = bool(signals["noise_hits"]) and not has_problem_fit
 
-    if has_problem_fit and has_real_entry:
+    if is_noise_repo:
+        decision = "skip"
+    elif has_high_signal and has_real_entry and (has_problem_fit or has_migration_shape):
         decision = "research"
-    elif (has_problem_fit or has_migration_shape) and signals["has_readme"]:
+    elif has_problem_fit and has_real_entry:
+        decision = "research"
+    elif has_medium_signal and has_real_entry and (has_problem_fit or has_migration_shape):
+        decision = "extract-only"
+    elif (has_problem_fit or has_migration_shape) and signals["has_readme"] and not is_hype_only:
         decision = "extract-only"
     else:
         decision = "skip"
@@ -590,6 +721,7 @@ def analyze_repo(
     profile = inspect_repo(repo_dir)
     summary = extract_readme_summary(repo_dir) or repo.get("description")
     repo_keywords = _tokenize_keywords(
+        repo.get("full_name"),
         repo.get("description"),
         summary,
         repo.get("language"),
@@ -672,6 +804,17 @@ def summarize_batch_growth(repos: list[dict[str, Any]], *, batch_keywords: list[
             }
         )
 
+    priority_candidates = [
+        {
+            "full_name": repo["full_name"],
+            "recommended_action": repo["recommended_action"],
+            "why": repo["action_reasons"][:3],
+            "next_step": repo["verification_backlog"]["runtime_truth"]["tasks"][0],
+        }
+        for repo in repos
+        if repo["recommended_action"] != "skip"
+    ][:5]
+
     return {
         "batch_keywords": batch_keywords,
         "language_mix": dict(language_mix),
@@ -679,6 +822,7 @@ def summarize_batch_growth(repos: list[dict[str, Any]], *, batch_keywords: list[
         "extract_queue": extract_queue,
         "contribution_holds": contribution_holds,
         "verification_queue": verification_queue[:5],
+        "priority_candidates": priority_candidates,
         "cognition_updates": [
             "Trending is only a discovery input, not proof of value.",
             "Evidence and actions should be separated; do not smuggle opinions in as fake precision.",
@@ -710,12 +854,62 @@ def build_runtime_context(
         "self_update": {
             "timing": "between batches only",
             "command": "git pull --ff-only",
-            "healthcheck": "python -m py_compile scripts/openclaw_trending_pipeline.py",
+            "healthcheck": (
+                "python -m py_compile "
+                "scripts/openclaw_trending_pipeline.py "
+                "scripts/agentic_review_loop.py "
+                "scripts/openclaw_long_run.py"
+            ),
         },
         "long_run_notes": [
             "Checkpoint after each finite batch so a 24h runner can resume safely.",
             "Refresh repositories with fast-forward pulls instead of recloning blindly.",
             "Update prompts and code between batches, not mid-analysis.",
+        ],
+    }
+
+
+def build_blocked_verification_backlog(sync_error: str) -> dict[str, Any]:
+    return {
+        "runtime_truth": {
+            "status": "blocked",
+            "tasks": [
+                "Retry repository sync before claiming any runtime truth.",
+            ],
+        },
+        "assumption_break": {
+            "status": "blocked",
+            "tasks": [
+                "Do not design assumption-break checks until the repository can be cloned or updated.",
+            ],
+        },
+        "portability": {
+            "status": "blocked",
+            "tasks": [
+                "Portability review is blocked because the source tree is unavailable.",
+            ],
+        },
+        "notes": [
+            f"Sync failed: {sync_error}",
+        ],
+    }
+
+
+def build_blocked_contribution_hypothesis(sync_error: str) -> dict[str, Any]:
+    return {
+        "status": "hold",
+        "interest_level": "none",
+        "candidate_focus": [],
+        "why": [
+            "Repository sync failed, so there is no evidence base for a contribution hypothesis.",
+            f"Sync failure: {sync_error}",
+        ],
+        "required_evidence": [
+            "Successfully clone or update the repository first.",
+            "Only evaluate contribution value after runtime facts exist.",
+        ],
+        "disallowed": [
+            "Do not guess PR opportunities from a broken or partial checkout.",
         ],
     }
 
@@ -748,11 +942,49 @@ def run_pipeline(
     html = html if html is not None else fetch_trending_html(since=since, language=language)
     repos = parse_trending_html(html)[:limit]
 
+    results: list[dict[str, Any]] = []
     seed_analyses: list[tuple[TrendingRepo, dict[str, Any], dict[str, Any]]] = []
     for repo in repos:
-        checkout = clone_or_update_repo(repo, clone_root=clone_root)
-        seed_analysis = analyze_repo(repo, Path(checkout["path"]))
-        seed_analyses.append((repo, checkout, seed_analysis))
+        try:
+            checkout = clone_or_update_repo(repo, clone_root=clone_root)
+            seed_analysis = analyze_repo(repo, Path(checkout["path"]))
+            seed_analyses.append((repo, checkout, seed_analysis))
+        except Exception as exc:
+            sync_error = str(exc)
+            blocked_keywords = _tokenize_keywords(
+                repo.get("description"),
+                repo.get("language"),
+                sync_error,
+            )
+            results.append(
+                {
+                    **repo,
+                    "clone_status": "failed",
+                    "sync_strategy": {
+                        "clone_if_missing": "git clone --depth 1 <repo> <target>",
+                        "refresh_if_present": ["git fetch --all --prune", "git pull --ff-only"],
+                    },
+                    "synced_at": datetime.now(timezone.utc).isoformat(),
+                    "local_path": None,
+                    "sync_error": sync_error,
+                    "analysis_profile": None,
+                    "analysis_summary": repo.get("description"),
+                    "signals": {
+                        "sync_ok": False,
+                    },
+                    "repo_keywords": blocked_keywords,
+                    "matched_batch_keywords": [],
+                    "recommended_action": "skip",
+                    "action_reasons": [
+                        "Repository sync failed before analysis, so this batch cannot produce evidence.",
+                    ],
+                    "analysis_red_flags": [f"Sync failed: {sync_error}"],
+                    "verification_backlog": build_blocked_verification_backlog(sync_error),
+                    "contribution_plan": build_blocked_contribution_hypothesis(sync_error),
+                    "extractor_prompt": ".prompts/system/code-extractor.md",
+                    "analysis_task": None,
+                }
+            )
 
     batch_keywords = derive_batch_keywords(
         [
@@ -765,7 +997,6 @@ def run_pipeline(
         ]
     )
 
-    results = []
     for repo, checkout, _seed_analysis in seed_analyses:
         analysis = analyze_repo(
             repo,

@@ -24,8 +24,9 @@
 7. 生成 verification backlog
 8. 如有必要，只生成 contribution hypothesis，状态固定为 hold
 9. 运行 agentic review loop，主动审查 prompt 和脚本本身
-10. 批次结束后写 checkpoint
-11. 批次之间再做 `git pull --ff-only` 自更新
+10. 批次结束后写 checkpoint 和历史记录
+11. 批次之间做 `git pull --ff-only` 自更新，并跑脚本健康检查
+12. 如果代码有更新，下一个批次必须从新代码继续，而不是拿旧进程硬跑
 ```
 
 ## 动作定义
@@ -49,3 +50,4 @@
 - 哪些 PR 假设一直停在 `hold`
 - 哪些验证计划后来证明当初理解错了
 - 哪些 prompt / script 已经变成静态负担，应该重写或归档
+- 上一批次之后是否完成了自更新，以及健康检查有没有通过
