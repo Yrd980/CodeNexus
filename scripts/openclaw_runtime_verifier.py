@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import re
@@ -482,6 +483,50 @@ def _build_portability(repo: dict[str, Any], *, worktree_lines: list[str]) -> di
     }
 
 
+def _cached_result_from_memory(
+    repo: dict[str, Any],
+    *,
+    repo_head: str | None,
+    memory_entry: dict[str, Any],
+    skip_reason: str,
+) -> dict[str, Any] | None:
+    snapshot = memory_entry.get("result_snapshot")
+    if not isinstance(snapshot, dict):
+        return None
+
+    runtime_truth = copy.deepcopy(snapshot.get("runtime_truth") or {})
+    assumption_break = copy.deepcopy(snapshot.get("assumption_break") or {})
+    portability = copy.deepcopy(snapshot.get("portability") or {})
+    gaps = list(snapshot.get("gaps") or [])
+    immediate_actions = list(snapshot.get("immediate_actions") or [])
+    cached_status = runtime_truth.get("status")
+
+    runtime_truth["status"] = "skipped-recently"
+    runtime_truth["cached_from_status"] = cached_status
+    runtime_truth["head"] = repo_head
+    runtime_truth["notes"] = [skip_reason, *list(runtime_truth.get("notes") or [])]
+
+    return {
+        "full_name": repo.get("full_name"),
+        "recommended_action": repo.get("recommended_action"),
+        "local_path": repo.get("local_path"),
+        "head": repo_head,
+        "runtime_truth": runtime_truth,
+        "assumption_break": assumption_break,
+        "portability": portability,
+        "overall_assessment": snapshot.get("overall_assessment", memory_entry.get("overall_assessment", "partial")),
+        "blocking_decision": snapshot.get(
+            "blocking_decision",
+            memory_entry.get("blocking_decision", "research-more"),
+        ),
+        "gaps": gaps,
+        "immediate_actions": [
+            "Wait for a new commit or cooldown expiry before rerunning runtime truth.",
+            *[action for action in immediate_actions if action != "Wait for a new commit or cooldown expiry before rerunning runtime truth."],
+        ],
+    }
+
+
 def _evaluate_result(
     repo: dict[str, Any],
     *,
@@ -757,14 +802,21 @@ def run_runtime_verifier(
                 cooldown_hours=cooldown_hours,
             )
             if should_skip:
-                result = _evaluate_result(
+                result = _cached_result_from_memory(
                     repo,
                     repo_head=repo_head,
-                    install_result=None,
-                    runtime_result=None,
-                    skip_reason=skip_reason,
-                    worktree_lines=_git_status_lines(repo_dir),
+                    memory_entry=memory_entry or {},
+                    skip_reason=skip_reason or "Runtime truth was recently checked.",
                 )
+                if result is None:
+                    result = _evaluate_result(
+                        repo,
+                        repo_head=repo_head,
+                        install_result=None,
+                        runtime_result=None,
+                        skip_reason=skip_reason,
+                        worktree_lines=_git_status_lines(repo_dir),
+                    )
                 summary["skipped_recently"] += 1
                 results.append(result)
                 continue
@@ -791,6 +843,15 @@ def run_runtime_verifier(
             "runtime_status": runtime_status,
             "overall_assessment": result["overall_assessment"],
             "blocking_decision": result["blocking_decision"],
+            "result_snapshot": {
+                "runtime_truth": result["runtime_truth"],
+                "assumption_break": result["assumption_break"],
+                "portability": result["portability"],
+                "overall_assessment": result["overall_assessment"],
+                "blocking_decision": result["blocking_decision"],
+                "gaps": result["gaps"],
+                "immediate_actions": result["immediate_actions"],
+            },
         }
         results.append(result)
 
