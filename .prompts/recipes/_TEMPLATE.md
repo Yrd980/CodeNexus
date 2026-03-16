@@ -31,4 +31,4 @@
 ## 来源
 
 - 提取自 [项目名](URL)
-- 关联 CodeNexus 模块：`foundation/xxx`
+- 关联 CodeNexus 产物：`artifact://xxx`

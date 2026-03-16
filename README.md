@@ -1,71 +1,73 @@
-# 🔗 CodeNexus
+# CodeNexus
 
-> Startup 工程师的代码军火库 —— 持续进化的 Best Practice 代码知识库
+> 给 OpenClaw / Codex 用的研究协议仓，不再是假装包罗万象的“模块超市”。
 
-## 理念
+## 现在这是什么
 
-CodeNexus 不是 boilerplate，不是 awesome-list。
+CodeNexus 现在主要保留两类东西：
 
-它是一个**活的代码知识库**——每一行代码都能跑，每一个模块都附带"为什么这样写"的设计决策，并且随着认知更新持续迭代。
+- `.prompts/`：研究、提炼、验证、复审的提示词和模板
+- `scripts/`：抓取 Trending、同步提炼结果、主动审查产物的脚本
 
-## 特点
+另外它现在多了一条主动审稿入口：
 
-- 🏃 **可运行** — 不是片段，是能跑的模块
-- 🧠 **有观点** — 每个模块说明为什么选这个方案
-- 🔄 **持续进化** — 随 best practice 变化而更新，附带变更记录
-- 🔍 **来源可溯** — 每个模块标注灵感来源和学习笔记
-- 🤖 **AI 原生** — 附带提示词，Claude / OpenClaw 能直接基于此库编程和进化
+- `scripts/agentic_review_loop.py`：主动扫描 `.prompts/`、`scripts/` 和指定产物目录，生成 review queue
 
-## 结构
+也就是说，它更像一套“怎么研究代码、怎么判断价值、怎么沉淀结果”的操作系统，而不是一堆老题材代码包的展厅。
 
-```
+## 目录
+
+```text
 CodeNexus/
-├── foundation/     🏗️ 基础设施（auth, db, api, infra, monitoring, ci-cd）
-├── modules/        📦 业务模块（payments, notifications, search, ai, realtime）
-├── patterns/       🧩 设计模式（限流, 队列, 缓存, 重试, 事件驱动）
-├── starters/       🚀 完整启动模板（SaaS, API, CLI, 浏览器扩展）
-├── .prompts/       🧠 提示词 & 知识卡片
-└── .claude/        🤖 Claude Code 项目指令
+├── .prompts/   # 分析、提炼、复审、协议、模板
+├── scripts/    # Trending 管线、同步脚本、审查脚本
+├── PHILOSOPHY.md
+└── CHANGELOG.md
 ```
 
-## 与 OpenClaw 🦞 的关系
+## 与 OpenClaw 的关系
 
-[OpenClaw](https://github.com/Yrd980/openclaw) 是我们的小龙虾代码猎手——它在 GitHub 上发现优质项目、给原项目提 PR 贡献回馈，同时提取精华沉淀到 CodeNexus。
+OpenClaw 负责发现和分析外部项目。
 
-```
-GitHub 优质项目 ──→ OpenClaw 🦞 ──→ 分析提取 ──→ CodeNexus 🔗
-                       │
-                       └──→ 给原项目提 PR（回馈社区）
-```
+CodeNexus 负责约束它：
 
-## 模块成熟度
-
-每个模块通过 `.meta.yml` 标记成熟度：
-
-| 等级 | 含义 |
-|------|------|
-| `draft` | 初始沉淀，待验证 |
-| `tested` | 通过测试，可在小项目使用 |
-| `stable` | 经过实际项目验证 |
-| `battle-tested` | 多个生产环境验证 |
+- 不要把热度当价值
+- 不要把静态阅读当理解
+- 不要把水 PR 当贡献
+- 不要把过时主题继续当中心
 
 ## 快速开始
 
 ```bash
-# 克隆
 git clone git@github.com:Yrd980/CodeNexus.git
 cd CodeNexus
 
-# 使用某个模块（示例）
-cp -r foundation/auth/src/ your-project/lib/auth/
+# 看协议
+cat .prompts/system/openclaw-protocol.md
 
-# 用 Claude Code 基于 CodeNexus 开发
-cd your-project
-claude  # Claude 会自动参考 CodeNexus 的知识
+# 看项目分析 prompt
+cat .prompts/system/code-extractor.md
+
+# 生成主动 review queue
+python scripts/agentic_review_loop.py
+
+# 跑 Trending 事实采集
+python scripts/openclaw_trending_pipeline.py --limit 5
+
+# 审查某个产物目录
+./scripts/validate.sh ./research/my-finding
 ```
+
+## 当前取向
+
+- 更偏 AI-native、automation、retrieval、evaluation、workflow、browser/tooling
+- 少做“旧时代 SaaS 工具箱目录学”
+- 把证据、动作、验证 backlog 明确分开
+- 把静态规范继续推成主动 review loop
+- 让产物审查输出 backlog，而不是只输出 pass/fail
 
 ## 参与
 
-- 通过 Issue 讨论 best practice 的变更
-- 通过 OpenClaw 🦞 提交新的代码发现
-- 直接 PR 改进现有模块
+- 直接改 prompt 和协议
+- 改 `scripts/` 里的研究管线
+- 删除已经没有价值的旧假设，而不是给它们换个新包装
