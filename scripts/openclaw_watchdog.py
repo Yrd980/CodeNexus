@@ -11,35 +11,36 @@ import signal
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+from script_support import DEFAULT_JSON_STORE, DEFAULT_PROCESS_GROUP_CONTROLLER, RuntimePaths, utc_now
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LONG_RUN_SCRIPT = REPO_ROOT / "scripts" / "openclaw_long_run.py"
 CHECK_INTERVAL_SECONDS = 30
 STALE_SECONDS = 180
 
+_JSON_STORE = DEFAULT_JSON_STORE
+_PROCESS_GROUPS = DEFAULT_PROCESS_GROUP_CONTROLLER
+
 
 def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return utc_now()
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    _JSON_STORE.write(path, payload)
 
 
 def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    _JSON_STORE.append_jsonl(path, payload)
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
-    if not path.exists():
-        return None
-    return json.loads(path.read_text(encoding="utf-8"))
+    return _JSON_STORE.read(path)
 
 
 def _parse_iso8601(value: str | None) -> float | None:
@@ -71,15 +72,55 @@ def _process_alive(pid: int | None) -> bool:
     return True
 
 
+@dataclass(frozen=True)
+class WorkerSnapshot:
+    pid: int | None
+    started_at: str | None
+    heartbeat: dict[str, Any]
+    state: dict[str, Any]
+    heartbeat_age_seconds: float | None
+
+
+@dataclass(frozen=True)
+class RestartDecision:
+    should_restart: bool
+    reason: str | None = None
+
+
+def _build_worker_snapshot(runtime_root: Path) -> WorkerSnapshot:
+    runtime_paths = RuntimePaths(runtime_root)
+    worker_pid_info = _read_json(runtime_paths.worker_pid_json) or {}
+    heartbeat = _read_json(runtime_paths.heartbeat_json) or {}
+    state = _read_json(runtime_paths.state_json) or {}
+    heartbeat_at = _parse_iso8601(heartbeat.get("updated_at"))
+    heartbeat_age = None if heartbeat_at is None else max(time.time() - heartbeat_at, 0)
+    return WorkerSnapshot(
+        pid=worker_pid_info.get("pid"),
+        started_at=worker_pid_info.get("started_at"),
+        heartbeat=heartbeat,
+        state=state,
+        heartbeat_age_seconds=heartbeat_age,
+    )
+
+
+def _decide_restart(snapshot: WorkerSnapshot, *, stale_seconds: int) -> RestartDecision:
+    if not _process_alive(snapshot.pid):
+        return RestartDecision(True, "worker process missing")
+    if snapshot.heartbeat_age_seconds is None:
+        return RestartDecision(True, "missing heartbeat")
+    if snapshot.heartbeat_age_seconds > stale_seconds:
+        return RestartDecision(True, f"heartbeat stale for {int(snapshot.heartbeat_age_seconds)}s")
+    return RestartDecision(False, None)
+
+
 def _launch_worker(
     *,
     runtime_root: Path,
-    limit: int,
     sleep_seconds: int,
-    language: str | None,
-    cadence_order: list[str],
+    manual_queue_path: Path | None,
 ) -> dict[str, Any]:
-    log_path = runtime_root / "worker.log"
+    runtime_paths = RuntimePaths(runtime_root)
+    log_path = runtime_paths.worker_log
     with log_path.open("ab") as log_handle:
         argv = [
             sys.executable,
@@ -89,13 +130,9 @@ def _launch_worker(
             "--forever",
             "--sleep-seconds",
             str(sleep_seconds),
-            "--limit",
-            str(limit),
-            "--cadence-order",
-            *cadence_order,
         ]
-        if language:
-            argv.extend(["--language", language])
+        if manual_queue_path is not None:
+            argv.extend(["--manual-queue", str(manual_queue_path)])
 
         process = subprocess.Popen(
             argv,
@@ -121,32 +158,18 @@ def _terminate_worker(pid: int, *, reason: str) -> dict[str, Any]:
         "reason": reason,
         "requested_at": _utc_now(),
     }
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except ProcessLookupError:
-        event["status"] = "already-dead"
-        return event
-
-    deadline = time.time() + 15
-    while time.time() < deadline:
-        if not _process_alive(pid):
-            event["status"] = "terminated"
-            event["completed_at"] = _utc_now()
-            return event
-        time.sleep(1)
-
-    try:
-        os.kill(pid, signal.SIGKILL)
-    except ProcessLookupError:
-        event["status"] = "terminated"
-    else:
-        event["status"] = "killed"
+    event["status"] = _PROCESS_GROUPS.terminate_pid_group(
+        pid,
+        is_alive=_process_alive,
+        grace_seconds=15,
+        poll_interval_seconds=1,
+    )
     event["completed_at"] = _utc_now()
     return event
 
 
 def _acquire_lock(runtime_root: Path):
-    lock_path = runtime_root / "watchdog.lock"
+    lock_path = RuntimePaths(runtime_root).watchdog_lock
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     handle = lock_path.open("w", encoding="utf-8")
     fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -158,62 +181,40 @@ def _acquire_lock(runtime_root: Path):
 def main() -> int:
     parser = argparse.ArgumentParser(description="Monitor and restart OpenClaw long-run worker.")
     parser.add_argument("--runtime-root", type=Path, default=REPO_ROOT / "runtime" / "openclaw-live")
-    parser.add_argument("--limit", type=int, default=5)
+    parser.add_argument("--manual-queue", type=Path, default=REPO_ROOT / "MANUAL_REPO_QUEUE.md")
     parser.add_argument("--sleep-seconds", type=int, default=600)
-    parser.add_argument("--language", default=None)
-    parser.add_argument(
-        "--cadence-order",
-        nargs="+",
-        default=["daily", "weekly", "monthly"],
-        choices=["daily", "weekly", "monthly"],
-    )
     parser.add_argument("--check-interval-seconds", type=int, default=CHECK_INTERVAL_SECONDS)
     parser.add_argument("--stale-seconds", type=int, default=STALE_SECONDS)
     args = parser.parse_args()
 
     runtime_root = args.runtime_root.resolve()
+    manual_queue_path = args.manual_queue.resolve() if args.manual_queue else None
+    runtime_paths = RuntimePaths(runtime_root)
     runtime_root.mkdir(parents=True, exist_ok=True)
     lock_handle = _acquire_lock(runtime_root)
     _ = lock_handle
 
-    watchdog_state_path = runtime_root / "watchdog.json"
-    watchdog_events_path = runtime_root / "watchdog-events.jsonl"
+    watchdog_state_path = runtime_paths.watchdog_json
+    watchdog_events_path = runtime_paths.watchdog_events_jsonl
 
     while True:
-        worker_pid_info = _read_json(runtime_root / "worker.pid.json") or {}
-        heartbeat = _read_json(runtime_root / "heartbeat.json") or {}
-        state = _read_json(runtime_root / "state.json") or {}
-        worker_pid = worker_pid_info.get("pid")
-        heartbeat_at = _parse_iso8601(heartbeat.get("updated_at"))
-        heartbeat_age = None if heartbeat_at is None else max(time.time() - heartbeat_at, 0)
-
-        should_restart = False
-        restart_reason = None
-
-        if not _process_alive(worker_pid):
-            should_restart = True
-            restart_reason = "worker process missing"
-        elif heartbeat_age is None:
-            should_restart = True
-            restart_reason = "missing heartbeat"
-        elif heartbeat_age > args.stale_seconds:
-            should_restart = True
-            restart_reason = f"heartbeat stale for {int(heartbeat_age)}s"
+        snapshot = _build_worker_snapshot(runtime_paths.root)
+        worker_pid = snapshot.pid
+        decision = _decide_restart(snapshot, stale_seconds=args.stale_seconds)
 
         last_event: dict[str, Any] | None = None
-        if should_restart:
+        if decision.should_restart:
             if _process_alive(worker_pid):
-                last_event = _terminate_worker(worker_pid, reason=restart_reason or "restart requested")
+                last_event = _terminate_worker(worker_pid, reason=decision.reason or "restart requested")
                 _append_jsonl(watchdog_events_path, last_event)
             last_event = _launch_worker(
                 runtime_root=runtime_root,
-                limit=args.limit,
                 sleep_seconds=args.sleep_seconds,
-                language=args.language,
-                cadence_order=args.cadence_order,
+                manual_queue_path=manual_queue_path,
             )
-            last_event["reason"] = restart_reason
+            last_event["reason"] = decision.reason
             _append_jsonl(watchdog_events_path, last_event)
+            worker_pid = last_event.get("pid")
 
         payload = {
             "updated_at": _utc_now(),
@@ -221,15 +222,21 @@ def main() -> int:
             "runtime_root": str(runtime_root),
             "check_interval_seconds": args.check_interval_seconds,
             "stale_seconds": args.stale_seconds,
-            "worker_pid": worker_pid_info.get("pid"),
-            "worker_started_at": worker_pid_info.get("started_at"),
-            "worker_alive": _process_alive(worker_pid_info.get("pid")),
-            "heartbeat": heartbeat,
-            "heartbeat_age_seconds": None if heartbeat_age is None else int(heartbeat_age),
-            "last_state_update": state.get("updated_at"),
-            "completed_batches": state.get("completed_batches"),
-            "failed_batches": state.get("failed_batches"),
+            "worker_pid": worker_pid,
+            "worker_started_at": (last_event or {}).get("started_at", snapshot.started_at),
+            "worker_alive": _process_alive(worker_pid),
+            "heartbeat": snapshot.heartbeat,
+            "heartbeat_age_seconds": None
+            if snapshot.heartbeat_age_seconds is None
+            else int(snapshot.heartbeat_age_seconds),
+            "last_state_update": snapshot.state.get("updated_at"),
+            "completed_batches": snapshot.state.get("completed_batches"),
+            "failed_batches": snapshot.state.get("failed_batches"),
             "last_event": last_event,
+            "restart_decision": {
+                "should_restart": decision.should_restart,
+                "reason": decision.reason,
+            },
         }
         _write_json(watchdog_state_path, payload)
         time.sleep(args.check_interval_seconds)

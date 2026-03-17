@@ -7,12 +7,13 @@
 CodeNexus 现在主要保留两类东西：
 
 - `.prompts/`：研究、提炼、验证、复审的提示词和模板
-- `scripts/`：抓取 Trending、同步提炼结果、主动审查产物的脚本
+- `scripts/`：处理手动仓库队列、运行验证链路、主动审查产物的脚本
+- `MANUAL_REPO_QUEUE.md`：手动投喂仓库 URL 的入口，会和现有分析链路合并
 
 另外它现在多了一条主动审稿入口：
 
 - `scripts/agentic_review_loop.py`：主动扫描 `.prompts/`、`scripts/` 和指定产物目录，生成 review queue
-- `scripts/openclaw_long_run.py`：按批次持续跑 Trending、写 checkpoint、批次间自更新
+- `scripts/openclaw_long_run.py`：按批次处理手动仓库队列、写 checkpoint、批次间自更新
 - `scripts/openclaw_watchdog.py`：持续监视 long-run worker，挂掉或心跳过期时自动拉起
 - `scripts/openclaw_runtime_verifier.py`：对 top candidates 真跑 startup / build 路径，落下 runtime truth 结论
 
@@ -23,7 +24,8 @@ CodeNexus 现在主要保留两类东西：
 ```text
 CodeNexus/
 ├── .prompts/   # 分析、提炼、复审、协议、模板
-├── scripts/    # Trending 管线、同步脚本、审查脚本
+├── MANUAL_REPO_QUEUE.md  # 手动仓库队列
+├── scripts/    # 手动队列管线、同步脚本、审查脚本
 ├── PHILOSOPHY.md
 └── CHANGELOG.md
 ```
@@ -54,8 +56,11 @@ cat .prompts/system/code-extractor.md
 # 生成主动 review queue
 python scripts/agentic_review_loop.py
 
-# 跑 Trending 事实采集
-python scripts/openclaw_trending_pipeline.py --limit 5
+# 手动填仓库 URL（系统会自动读取这个文件）
+$EDITOR MANUAL_REPO_QUEUE.md
+
+# 跑一次手动仓库队列分析
+python scripts/openclaw_repo_queue_pipeline.py
 
 # 跑一次完整批次循环
 python scripts/openclaw_long_run.py --max-batches 1 --sleep-seconds 0
@@ -67,7 +72,7 @@ python scripts/openclaw_runtime_verifier.py --manifest runtime/openclaw/latest-m
 python scripts/openclaw_long_run.py --forever --sleep-seconds 900
 
 # 进入 watchdog 托管模式
-python scripts/openclaw_watchdog.py --runtime-root runtime/openclaw-live --sleep-seconds 600 --limit 5
+python scripts/openclaw_watchdog.py --runtime-root runtime/openclaw-live --sleep-seconds 600
 
 # 审查某个产物目录
 ./scripts/validate.sh ./research/my-finding
@@ -86,7 +91,15 @@ python scripts/openclaw_watchdog.py --runtime-root runtime/openclaw-live --sleep
 - `watchdog.json`
 - `watchdog-events.jsonl`
 - `verification-memory.json`
-- `batches/<timestamp>-<since>/...`
+- `batches/<timestamp>/...`
+
+默认情况下，`openclaw_repo_queue_pipeline.py` 和 `openclaw_long_run.py` 都会读取仓库根目录下的 `MANUAL_REPO_QUEUE.md`，并且只处理手动输入的仓库。
+
+也就是说，现在的 discovery 默认是：
+
+- 手动粘贴进 `MANUAL_REPO_QUEUE.md` 的仓库 URL
+
+手动队列只影响“发现和入队”，不会替换现有的 review、checkpoint、runtime truth、watchdog 这套后续链路。
 
 ## 当前取向
 

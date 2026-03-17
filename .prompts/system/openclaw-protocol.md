@@ -4,7 +4,7 @@
 
 ## 核心原则
 
-- GitHub Trending 是默认起点，先 clone / update，再分析
+- 手动仓库队列是默认起点，先 clone / update，再分析
 - 主流程只记录事实、证据、下一步动作，不做伪精确打分
 - 语言开放，但 Startup 面向的最终产物要保留一个最小可运行路径
 - Docker / devcontainer 只算运行上下文

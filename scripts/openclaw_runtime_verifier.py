@@ -10,7 +10,6 @@ import os
 import re
 import shlex
 import shutil
-import signal
 import subprocess
 import time
 from datetime import datetime, timedelta, timezone
@@ -19,6 +18,9 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin
 from urllib.request import Request, urlopen
+
+from payload_models import RuntimeVerificationPayload, RuntimeVerificationResult, RuntimeVerificationSummary
+from script_support import DEFAULT_JSON_STORE, DEFAULT_PROCESS_GROUP_CONTROLLER, RuntimePaths, trim_text, utc_now
 
 READY_PATTERNS: dict[str, re.Pattern[str]] = {
     "ready": re.compile(r"\bready\b", re.IGNORECASE),
@@ -41,33 +43,24 @@ SIDE_EFFECT_PATTERNS: dict[str, re.Pattern[str]] = {
     "home_state": re.compile(r"~\/|/home/[^\s/]+/|\.claude/plugins|marketplaces/", re.IGNORECASE),
 }
 
+_JSON_STORE = DEFAULT_JSON_STORE
+_PROCESS_GROUPS = DEFAULT_PROCESS_GROUP_CONTROLLER
+
 
 def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return utc_now()
 
 
 def _trim_text(value: str | bytes | None, *, limit: int = 4000) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, bytes):
-        text = value.decode("utf-8", errors="ignore")
-    else:
-        text = value
-    text = text.strip()
-    if len(text) <= limit:
-        return text
-    return f"{text[:limit]}...[truncated]"
+    return trim_text(value, limit=limit)
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
-    if not path.exists():
-        return None
-    return json.loads(path.read_text(encoding="utf-8"))
+    return _JSON_STORE.read(path)
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    _JSON_STORE.write(path, payload)
 
 
 def _parse_iso8601(value: str | None) -> datetime | None:
@@ -179,21 +172,7 @@ def _run_finite_command(argv: list[str], *, cwd: Path, timeout_seconds: int) -> 
 
 
 def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
-    try:
-        os.killpg(process.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        return
-
-    deadline = time.time() + 10
-    while time.time() < deadline:
-        if process.poll() is not None:
-            return
-        time.sleep(0.5)
-
-    try:
-        os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        return
+    _PROCESS_GROUPS.terminate_process(process, grace_seconds=10, poll_interval_seconds=0.5)
 
 
 def _run_observed_command(argv: list[str], *, cwd: Path, observe_seconds: int) -> dict[str, Any]:
@@ -766,9 +745,10 @@ def run_runtime_verifier(
     install_timeout_seconds: int,
     command_timeout_seconds: int,
     force: bool,
-) -> dict[str, Any]:
+) -> RuntimeVerificationPayload:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    memory_path = runtime_root / "verification-memory.json"
+    runtime_paths = RuntimePaths(runtime_root)
+    memory_path = runtime_paths.verification_memory_json
     memory = _read_json(memory_path) or {"updated_at": None, "repos": {}}
     memory_repos = memory.setdefault("repos", {})
 
@@ -781,8 +761,8 @@ def run_runtime_verifier(
         key=_status_sort_key,
     )[:repo_limit]
 
-    results: list[dict[str, Any]] = []
-    summary = {
+    results: list[RuntimeVerificationResult] = []
+    summary: RuntimeVerificationSummary = {
         "attempted": 0,
         "ready": 0,
         "running": 0,
@@ -858,7 +838,7 @@ def run_runtime_verifier(
     memory["updated_at"] = _utc_now()
     _write_json(memory_path, memory)
 
-    payload = {
+    payload: RuntimeVerificationPayload = {
         "generated_at": _utc_now(),
         "manifest_path": str(manifest_path),
         "runtime_root": str(runtime_root),

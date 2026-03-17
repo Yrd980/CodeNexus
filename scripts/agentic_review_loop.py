@@ -9,7 +9,14 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+
+from payload_models import (
+    ReviewQueueFinding,
+    ReviewQueueNextWaveItem,
+    ReviewQueuePayload,
+    ReviewQueueSummary,
+)
 
 DEFAULT_GLOBS = (
     "README.md",
@@ -75,6 +82,13 @@ STARTUP_PATTERNS = {
     "quick_start": r"\bquick start\b|\b快速使用\b|\b快速开始\b",
     "run_command": r"\b(python|python3|uv|npm|pnpm|bun|cargo|go)\s+[^\n]*\b(run|start|dev|serve|main)\b",
     "compose_up": r"\bdocker compose up\b|\bdocker-compose up\b",
+    "python_entrypoint": r"\bpython3?\s+(?:-m\s+\S+\s+)?(?:\./)?(?:src/)?[\w./-]+\.py\b",
+    "node_entrypoint": r"\bnode\s+(?:\./)?[\w./-]+\.(?:m?js|cjs)\b",
+    "uvicorn": r"\b(?:python3?\s+-m\s+)?uvicorn\s+\S+",
+    "gunicorn": r"\bgunicorn\s+\S+",
+    "streamlit": r"\bstreamlit\s+run\b",
+    "flask": r"\bflask\s+run\b",
+    "make_run": r"\bmake\s+(?:run|start|serve)\b",
 }
 
 
@@ -89,8 +103,90 @@ class ReviewItem:
     signals: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class ReviewContext:
+    rel_path: str
+    kind: str
+    is_helper_module: bool
+    passive_hits: tuple[str, ...]
+    legacy_hits: tuple[str, ...]
+    test_hits: tuple[str, ...]
+    agentic_hits: tuple[str, ...]
+    verification_hits: tuple[str, ...]
+    startup_hits: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ReviewRule:
+    name: str
+    predicate: Callable[[ReviewContext], bool]
+    decision: str
+    severity: str
+    why: str
+    next_action: str
+
+
+REVIEW_RULES = (
+    ReviewRule(
+        name="legacy-test-without-verification",
+        predicate=lambda ctx: bool(ctx.legacy_hits and ctx.test_hits) and not ctx.verification_hits,
+        decision="rewrite",
+        severity="high",
+        why="It still leaks the deleted package-gallery worldview and leans on test theater.",
+        next_action="Rewrite it around startup truth, assumption break, and portability evidence.",
+    ),
+    ReviewRule(
+        name="test-without-verification-or-agentic-flow",
+        predicate=lambda ctx: bool(ctx.test_hits) and not ctx.verification_hits and not ctx.agentic_hits,
+        decision="rewrite",
+        severity="high",
+        why="It treats tests as legitimacy while first-principles verification is missing.",
+        next_action="Replace test-centric gating with runtime truth and assumption-break review.",
+    ),
+    ReviewRule(
+        name="passive-without-agentic-flow",
+        predicate=lambda ctx: len(ctx.passive_hits) >= 2 and not ctx.agentic_hits,
+        decision="rewrite",
+        severity="high",
+        why="It still reads like a static checklist instead of an action-producing reviewer.",
+        next_action="Turn it into a reviewer that emits blockers, next actions, and delete/archive calls.",
+    ),
+    ReviewRule(
+        name="legacy-without-agentic-flow",
+        predicate=lambda ctx: bool(ctx.legacy_hits) and not ctx.agentic_hits,
+        decision="rewrite",
+        severity="medium",
+        why="It still carries old directory or module assumptions that should stay deleted.",
+        next_action="Retarget it around artifacts, protocols, and active review queues.",
+    ),
+    ReviewRule(
+        name="script-prompt-protocol-without-agentic-flow",
+        predicate=lambda ctx: (
+            ctx.kind in {"prompt", "protocol"}
+            or (ctx.kind == "script" and not ctx.is_helper_module)
+        )
+        and not ctx.agentic_hits,
+        decision="archive",
+        severity="medium",
+        why="It does not yet participate in proactive review flow.",
+        next_action="Archive it unless it can be connected to the agentic loop.",
+    ),
+)
+
+
 def _read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="ignore")
+
+
+def _unique_labels(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        ordered.append(value)
+    return ordered
 
 
 def _relpath(root: Path, path: Path) -> str:
@@ -100,8 +196,8 @@ def _relpath(root: Path, path: Path) -> str:
         return str(path.resolve())
 
 
-def _kind_for(path: Path) -> str:
-    if path.name in {"README.md", "PHILOSOPHY.md", "CHANGELOG.md"}:
+def _kind_for(root: Path, path: Path) -> str:
+    if path.parent.resolve() == root.resolve() and path.name in {"README.md", "PHILOSOPHY.md", "CHANGELOG.md"}:
         return "protocol"
     if path.suffix in {".py", ".sh"}:
         return "script"
@@ -117,13 +213,22 @@ def _kind_for(path: Path) -> str:
 
 
 def _matched_labels(text: str, patterns: dict[str, str]) -> list[str]:
-    return [label for label, pattern in patterns.items() if re.search(pattern, text, re.IGNORECASE)]
+    return _unique_labels([label for label, pattern in patterns.items() if re.search(pattern, text, re.IGNORECASE)])
+
+
+def _is_helper_module(path: Path, text: str) -> bool:
+    if path.suffix != ".py":
+        return False
+    has_main_guard = "__name__ == \"__main__\"" in text or "__name__ == '__main__'" in text
+    has_argparse = "ArgumentParser(" in text
+    return not has_main_guard and not has_argparse
 
 
 def _review_from_signals(
     *,
     rel_path: str,
     kind: str,
+    is_helper_module: bool,
     passive_hits: list[str],
     legacy_hits: list[str],
     test_hits: list[str],
@@ -131,40 +236,32 @@ def _review_from_signals(
     verification_hits: list[str],
     startup_hits: list[str],
 ) -> ReviewItem:
-    why: list[str] = []
+    context = ReviewContext(
+        rel_path=rel_path,
+        kind=kind,
+        is_helper_module=is_helper_module,
+        passive_hits=tuple(passive_hits),
+        legacy_hits=tuple(legacy_hits),
+        test_hits=tuple(test_hits),
+        agentic_hits=tuple(agentic_hits),
+        verification_hits=tuple(verification_hits),
+        startup_hits=tuple(startup_hits),
+    )
     decision = "keep"
     severity = "low"
     next_action = "Keep it in the active loop and revisit after the next protocol shift."
+    why = ["It already speaks in terms of evidence, backlog, or next actions."]
 
-    if legacy_hits and test_hits and not verification_hits:
-        decision = "rewrite"
-        severity = "high"
-        why.append("It still leaks the deleted package-gallery worldview and leans on test theater.")
-        next_action = "Rewrite it around startup truth, assumption break, and portability evidence."
-    elif test_hits and not verification_hits and not agentic_hits:
-        decision = "rewrite"
-        severity = "high"
-        why.append("It treats tests as legitimacy while first-principles verification is missing.")
-        next_action = "Replace test-centric gating with runtime truth and assumption-break review."
-    elif passive_hits and len(passive_hits) >= 2 and not agentic_hits:
-        decision = "rewrite"
-        severity = "high"
-        why.append("It still reads like a static checklist instead of an action-producing reviewer.")
-        next_action = "Turn it into a reviewer that emits blockers, next actions, and delete/archive calls."
-    elif legacy_hits and not agentic_hits:
-        decision = "rewrite"
-        severity = "medium"
-        why.append("It still carries old directory or module assumptions that should stay deleted.")
-        next_action = "Retarget it around artifacts, protocols, and active review queues."
-    elif kind in {"prompt", "script", "protocol"} and not agentic_hits:
-        decision = "archive"
-        severity = "medium"
-        why.append("It does not yet participate in proactive review flow.")
-        next_action = "Archive it unless it can be connected to the agentic loop."
-    else:
-        why.append("It already speaks in terms of evidence, backlog, or next actions.")
-        if startup_hits and verification_hits:
-            why.append("It preserves a startup path without confusing tests for truth.")
+    for rule in REVIEW_RULES:
+        if rule.predicate(context):
+            decision = rule.decision
+            severity = rule.severity
+            next_action = rule.next_action
+            why = [rule.why]
+            break
+
+    if decision == "keep" and startup_hits and verification_hits:
+        why.append("It preserves a startup path without confusing tests for truth.")
 
     return ReviewItem(
         path=rel_path,
@@ -185,10 +282,12 @@ def _review_from_signals(
 
 
 def review_file(root: Path, path: Path) -> ReviewItem:
-    text = f"{_relpath(root, path)}\n{_read_text(path)}"
+    file_text = _read_text(path)
+    text = f"{_relpath(root, path)}\n{file_text}"
     return _review_from_signals(
         rel_path=_relpath(root, path),
-        kind=_kind_for(path),
+        kind=_kind_for(root, path),
+        is_helper_module=_is_helper_module(path, file_text),
         passive_hits=_matched_labels(text, PASSIVE_PATTERNS),
         legacy_hits=_matched_labels(text, LEGACY_WORLDVIEW_PATTERNS),
         test_hits=_matched_labels(text, TEST_THEATER_PATTERNS),
@@ -216,10 +315,21 @@ def review_directory(root: Path, directory: Path) -> ReviewItem | None:
         )
 
     readme_path = directory / "README.md"
-    readme_text = _read_text(readme_path) if readme_path.is_file() else ""
     metadata_path = next((path for path in files if path.name in {".meta.yml", ".meta.yaml"}), None)
-    metadata_text = _read_text(metadata_path) if metadata_path else ""
-    combined = "\n".join((readme_text, metadata_text))
+    context_paths = [readme_path if readme_path.is_file() else None, metadata_path]
+    context_paths.extend(
+        directory / name
+        for name in (
+            "package.json",
+            "pyproject.toml",
+            "docker-compose.yml",
+            "docker-compose.yaml",
+            "compose.yml",
+            "compose.yaml",
+        )
+        if (directory / name).is_file()
+    )
+    combined = "\n".join(_read_text(path) for path in context_paths if path is not None)
 
     tests_dir = directory / "tests"
     startup_hits = _matched_labels(combined, STARTUP_PATTERNS)
@@ -301,7 +411,7 @@ def _collect_default_files(root: Path) -> list[Path]:
     return sorted(collected.values())
 
 
-def build_review_queue(root: Path, raw_targets: list[str]) -> dict[str, Any]:
+def build_review_queue(root: Path, raw_targets: list[str]) -> ReviewQueuePayload:
     if raw_targets:
         file_targets, dir_targets = _expand_explicit_targets(root, raw_targets)
     else:
@@ -322,14 +432,14 @@ def build_review_queue(root: Path, raw_targets: list[str]) -> dict[str, Any]:
         ),
     )
 
-    summary = {
+    summary: ReviewQueueSummary = {
         "rewrite_now": sum(1 for item in ordered if item.decision == "rewrite"),
         "archive_now": sum(1 for item in ordered if item.decision == "archive"),
         "delete_now": sum(1 for item in ordered if item.decision == "delete"),
         "keep_watching": sum(1 for item in ordered if item.decision == "keep"),
     }
 
-    next_wave = [
+    next_wave: list[ReviewQueueNextWaveItem] = [
         {
             "path": item.path,
             "decision": item.decision,
@@ -340,24 +450,26 @@ def build_review_queue(root: Path, raw_targets: list[str]) -> dict[str, Any]:
         if item.decision != "keep"
     ][:10]
 
+    findings: list[ReviewQueueFinding] = [
+        {
+            "path": item.path,
+            "kind": item.kind,
+            "severity": item.severity,
+            "decision": item.decision,
+            "why": item.why,
+            "next_action": item.next_action,
+            "signals": item.signals,
+        }
+        for item in ordered
+    ]
+
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "root": str(root),
         "review_prompt": ".prompts/system/agentic-reviewer.md",
         "summary": summary,
         "next_wave": next_wave,
-        "findings": [
-            {
-                "path": item.path,
-                "kind": item.kind,
-                "severity": item.severity,
-                "decision": item.decision,
-                "why": item.why,
-                "next_action": item.next_action,
-                "signals": item.signals,
-            }
-            for item in ordered
-        ],
+        "findings": findings,
     }
 
 

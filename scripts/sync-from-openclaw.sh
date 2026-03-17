@@ -17,7 +17,7 @@ mkdir -p "$ARTIFACT_PATH"
 # 复制文件
 if [ -d "$EXTRACTION_DIR/src" ]; then
   mkdir -p "$ARTIFACT_PATH/src"
-  cp -r "$EXTRACTION_DIR/src/"* "$ARTIFACT_PATH/src/"
+  cp -R "$EXTRACTION_DIR/src/." "$ARTIFACT_PATH/src/"
   echo "  ✅ Source code copied"
 fi
 

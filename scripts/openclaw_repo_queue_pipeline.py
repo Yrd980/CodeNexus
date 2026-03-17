@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Simple Trending -> repo sync -> evidence manifest pipeline."""
+"""Manual repo queue -> repo sync -> evidence manifest pipeline."""
 
 from __future__ import annotations
 
@@ -7,17 +7,16 @@ import argparse
 import json
 import re
 import subprocess
-import tempfile
 from collections import Counter
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from html import unescape
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from urllib.parse import urlparse
 
 TrendingRepo = dict[str, Any]
 CommandRunner = Callable[[list[str], str | None], None]
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 STOPWORDS = {
     "about",
@@ -170,13 +169,66 @@ MONOREPO_MARKERS = (
 )
 
 
-def _clean_text(value: str | None) -> str | None:
-    if value is None:
-        return None
-    text = re.sub(r"<[^>]+>", " ", value)
-    text = unescape(text)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text or None
+@dataclass(frozen=True)
+class RepoActionContext:
+    signals: dict[str, Any]
+    profile: dict[str, Any]
+    has_problem_fit: bool
+    has_batch_alignment: bool
+    has_migration_shape: bool
+    has_real_entry: bool
+    has_high_signal: bool
+    has_medium_signal: bool
+    is_hype_only: bool
+    is_noise_repo: bool
+
+
+@dataclass(frozen=True)
+class RepoActionRule:
+    name: str
+    predicate: Callable[[RepoActionContext], bool]
+    decision: str
+
+
+REPO_ACTION_RULES = (
+    RepoActionRule(
+        name="noise-repo",
+        predicate=lambda ctx: ctx.is_noise_repo,
+        decision="skip",
+    ),
+    RepoActionRule(
+        name="hype-only-low-signal",
+        predicate=lambda ctx: ctx.is_hype_only and ctx.signals["signal_band"] == "low",
+        decision="skip",
+    ),
+    RepoActionRule(
+        name="high-signal-real-entry",
+        predicate=lambda ctx: ctx.has_high_signal and ctx.has_real_entry and (ctx.has_problem_fit or ctx.has_migration_shape),
+        decision="research",
+    ),
+    RepoActionRule(
+        name="problem-fit-real-entry",
+        predicate=lambda ctx: ctx.has_problem_fit and ctx.has_real_entry,
+        decision="research",
+    ),
+    RepoActionRule(
+        name="medium-signal-real-entry",
+        predicate=lambda ctx: ctx.has_medium_signal and ctx.has_real_entry and (ctx.has_problem_fit or ctx.has_migration_shape),
+        decision="extract-only",
+    ),
+    RepoActionRule(
+        name="batch-aligned-real-entry",
+        predicate=lambda ctx: ctx.has_batch_alignment and ctx.has_real_entry and not ctx.is_hype_only,
+        decision="extract-only",
+    ),
+    RepoActionRule(
+        name="readme-and-transferable-shape",
+        predicate=lambda ctx: (ctx.has_problem_fit or ctx.has_migration_shape)
+        and ctx.signals["has_readme"]
+        and not ctx.is_hype_only,
+        decision="extract-only",
+    ),
+)
 
 
 def _unique(values: list[str]) -> list[str]:
@@ -193,6 +245,66 @@ def _read_text_if_exists(path: Path) -> str | None:
     if not path.exists():
         return None
     return path.read_text(encoding="utf-8", errors="ignore")
+
+
+def _parse_manual_repo_url(raw_value: str) -> tuple[str, str] | None:
+    value = raw_value.strip()
+    if not value:
+        return None
+
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"}:
+        return None
+    if parsed.netloc.lower() not in {"github.com", "www.github.com"}:
+        return None
+
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) < 2:
+        return None
+    full_name = "/".join(parts[:2])
+
+    if full_name.endswith(".git"):
+        full_name = full_name[:-4]
+
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", full_name):
+        return None
+    return full_name, f"https://github.com/{full_name}"
+
+
+def load_manual_repo_queue(queue_path: Path | None) -> list[TrendingRepo]:
+    if queue_path is None:
+        raise ValueError("Manual queue path is required.")
+    if not queue_path.exists():
+        raise FileNotFoundError(f"Manual queue does not exist: {queue_path}")
+
+    lines = queue_path.read_text(encoding="utf-8").splitlines()
+
+    repos_by_name: dict[str, TrendingRepo] = {}
+    ordered_names: list[str] = []
+    for line_number, raw_line in enumerate(lines, start=1):
+        stripped = raw_line.strip()
+        if not stripped:
+            continue
+
+        parsed = _parse_manual_repo_url(stripped)
+        if parsed is None:
+            raise ValueError(
+                f"Invalid GitHub repository URL on line {line_number} in {queue_path}: {stripped!r}"
+            )
+
+        full_name, url = parsed
+        existing = repos_by_name.get(full_name)
+        if existing is None:
+            repos_by_name[full_name] = {
+                "full_name": full_name,
+                "url": url,
+                "manual_queue_path": str(queue_path),
+            }
+            ordered_names.append(full_name)
+    if not ordered_names:
+        raise ValueError(f"Manual queue is empty: {queue_path}")
+
+    return [repos_by_name[full_name] for full_name in ordered_names]
 
 
 def _format_script_command(package_manager: str, script: str) -> str:
@@ -219,48 +331,6 @@ def _detect_node_package_manager(repo_dir: Path, package_json: dict[str, Any]) -
     if (repo_dir / "bun.lockb").exists() or (repo_dir / "bun.lock").exists():
         return "bun"
     return "npm"
-
-
-def parse_trending_html(html: str) -> list[TrendingRepo]:
-    repos: list[TrendingRepo] = []
-    article_pattern = re.compile(r"<article\b[^>]*>(.*?)</article>", re.IGNORECASE | re.DOTALL)
-
-    for article in article_pattern.findall(html):
-        href_match = re.search(
-            r"<h2\b[^>]*>.*?href=\"/([^\"/]+/[^\"/]+)\"",
-            article,
-            re.IGNORECASE | re.DOTALL,
-        )
-        if not href_match:
-            href_match = re.search(r'href="/([^"/]+/[^"/]+)"', article)
-        if not href_match:
-            continue
-
-        description_match = re.search(r"<p\b[^>]*>(.*?)</p>", article, re.IGNORECASE | re.DOTALL)
-        language_match = re.search(
-            r'<span\b[^>]*itemprop="programmingLanguage"[^>]*>(.*?)</span>',
-            article,
-            re.IGNORECASE | re.DOTALL,
-        )
-        stars_today_match = re.search(r"([0-9][0-9,]*)\s+stars today", article, re.IGNORECASE)
-
-        full_name = href_match.group(1).strip()
-        if full_name.startswith("sponsors/"):
-            continue
-
-        repos.append(
-            {
-                "full_name": full_name,
-                "url": f"https://github.com/{full_name}",
-                "description": _clean_text(description_match.group(1) if description_match else None),
-                "language": _clean_text(language_match.group(1) if language_match else None),
-                "stars_today": int(stars_today_match.group(1).replace(",", ""))
-                if stars_today_match
-                else None,
-            }
-        )
-
-    return repos
 
 
 def _default_runner(argv: list[str], cwd: str | None = None) -> None:
@@ -455,7 +525,6 @@ def derive_batch_keywords(repos: list[TrendingRepo]) -> list[str]:
     for repo in repos:
         repo_keywords = repo.get("repo_keywords") or _tokenize_keywords(
             repo.get("full_name"),
-            repo.get("description"),
             repo.get("analysis_summary"),
         )
         for token in set(repo_keywords):
@@ -488,21 +557,12 @@ def collect_repo_signals(
         part
         for part in (
             repo.get("full_name"),
-            repo.get("description"),
             summary,
         )
         if part
     )
     hype_hits = _find_phrase_hits(combined_text, HYPE_MARKERS)
     noise_hits = _find_phrase_hits(combined_text, NOISE_MARKERS)
-
-    stars_today = repo.get("stars_today") or 0
-    if stars_today >= 200:
-        trend_signal = "strong"
-    elif stars_today >= 75:
-        trend_signal = "medium"
-    else:
-        trend_signal = "light"
 
     positive_score = (
         min(len(domain_keywords), 4) * 3
@@ -512,7 +572,6 @@ def collect_repo_signals(
         + (1 if profile["build_commands"] else 0)
         + (1 if profile["test_commands"] else 0)
         + (1 if profile["has_ci"] else 0)
-        + (2 if trend_signal == "strong" else 1 if trend_signal == "medium" else 0)
         + (1 if summary else 0)
     )
     negative_score = (
@@ -534,7 +593,6 @@ def collect_repo_signals(
         signal_band = "low"
 
     return {
-        "trend_signal": trend_signal,
         "signal_band": signal_band,
         "positive_score": positive_score,
         "negative_score": negative_score,
@@ -570,7 +628,7 @@ def decide_repo_action(
     if signals["domain_keywords"]:
         reasons.append(f"Touches startup-relevant domains: {', '.join(signals['domain_keywords'])}")
     if signals["matched_batch_keywords"]:
-        reasons.append(f"Matches current trend batch themes: {', '.join(signals['matched_batch_keywords'])}")
+        reasons.append(f"Matches current queue themes: {', '.join(signals['matched_batch_keywords'])}")
     if signals["transfer_keywords"]:
         reasons.append(f"Shows transferable surfaces: {', '.join(signals['transfer_keywords'])}")
     if signals["design_keywords"]:
@@ -583,8 +641,6 @@ def decide_repo_action(
         reasons.append("Has test entrypoints")
     if signals["has_ci"]:
         reasons.append("Has CI signal")
-    if signals["trend_signal"] != "light":
-        reasons.append(f"Trending signal is {signals['trend_signal']}")
     if profile["docker_files"]:
         reasons.append(
             "Docker context found but treated only as runtime context: "
@@ -614,23 +670,24 @@ def decide_repo_action(
     has_medium_signal = signals["signal_band"] == "medium"
     is_hype_only = bool(signals["hype_hits"]) and not (has_problem_fit or has_migration_shape)
     is_noise_repo = bool(signals["noise_hits"]) and not has_problem_fit
+    context = RepoActionContext(
+        signals=signals,
+        profile=profile,
+        has_problem_fit=has_problem_fit,
+        has_batch_alignment=has_batch_alignment,
+        has_migration_shape=has_migration_shape,
+        has_real_entry=has_real_entry,
+        has_high_signal=has_high_signal,
+        has_medium_signal=has_medium_signal,
+        is_hype_only=is_hype_only,
+        is_noise_repo=is_noise_repo,
+    )
 
-    if is_noise_repo:
-        decision = "skip"
-    elif is_hype_only and signals["signal_band"] == "low":
-        decision = "skip"
-    elif has_high_signal and has_real_entry and (has_problem_fit or has_migration_shape):
-        decision = "research"
-    elif has_problem_fit and has_real_entry:
-        decision = "research"
-    elif has_medium_signal and has_real_entry and (has_problem_fit or has_migration_shape):
-        decision = "extract-only"
-    elif has_batch_alignment and has_real_entry and not is_hype_only:
-        decision = "extract-only"
-    elif (has_problem_fit or has_migration_shape) and signals["has_readme"] and not is_hype_only:
-        decision = "extract-only"
-    else:
-        decision = "skip"
+    decision = "skip"
+    for rule in REPO_ACTION_RULES:
+        if rule.predicate(context):
+            decision = rule.decision
+            break
 
     return decision, reasons, red_flags
 
@@ -724,12 +781,10 @@ def analyze_repo(
     batch_keywords: list[str] | None = None,
 ) -> dict[str, Any]:
     profile = inspect_repo(repo_dir)
-    summary = extract_readme_summary(repo_dir) or repo.get("description")
+    summary = extract_readme_summary(repo_dir)
     repo_keywords = _tokenize_keywords(
         repo.get("full_name"),
-        repo.get("description"),
         summary,
-        repo.get("language"),
     )
     signals = collect_repo_signals(
         repo,
@@ -761,12 +816,20 @@ def build_analysis_task(
     analysis: dict[str, Any],
     batch_keywords: list[str],
 ) -> dict[str, Any]:
+    operator_notes = [
+        "Use the local checkout as the source of truth.",
+        "Collect facts before opinions.",
+        "Explain the repository in engineering terms, not hype terms.",
+        "Pseudocode is acceptable for cross-language distillation, but startup-facing output must keep one runnable path.",
+        "Numeric edge cases alone are not enough reason to propose an outbound PR.",
+        "Treat Docker as runtime context, not as a bonus signal.",
+        "Keep outbound PRs on hold until runtime truth exists.",
+    ]
+
     return {
         "system_prompt_path": ".prompts/system/code-extractor.md",
         "project_url": repo["url"],
         "local_path": local_path,
-        "language": repo.get("language"),
-        "description": repo.get("description"),
         "summary_hint": analysis.get("summary"),
         "analysis_profile": analysis.get("profile"),
         "signals": analysis.get("signals"),
@@ -775,20 +838,19 @@ def build_analysis_task(
         "batch_keywords": batch_keywords,
         "repo_keywords": analysis.get("repo_keywords", []),
         "recommended_action": analysis.get("recommended_action"),
-        "operator_notes": [
-            "Use the local checkout as the source of truth.",
-            "Collect facts before opinions.",
-            "Explain why this repository is trending in engineering terms, not hype terms.",
-            "Pseudocode is acceptable for cross-language distillation, but startup-facing output must keep one runnable path.",
-            "Numeric edge cases alone are not enough reason to propose an outbound PR.",
-            "Treat Docker as runtime context, not as a bonus signal.",
-            "Keep outbound PRs on hold until runtime truth exists.",
-        ],
+        "operator_notes": operator_notes,
     }
 
 
 def summarize_batch_growth(repos: list[dict[str, Any]], *, batch_keywords: list[str]) -> dict[str, Any]:
-    language_mix = Counter((repo.get("language") or "unknown").lower() for repo in repos)
+    language_mix = Counter(
+        (
+            (repo.get("analysis_profile") or {}).get("ecosystems", ["unknown"])[0]
+            if (repo.get("analysis_profile") or {}).get("ecosystems")
+            else "unknown"
+        ).lower()
+        for repo in repos
+    )
     research_queue = [repo["full_name"] for repo in repos if repo["recommended_action"] == "research"]
     extract_queue = [repo["full_name"] for repo in repos if repo["recommended_action"] == "extract-only"]
     contribution_holds = [
@@ -838,7 +900,7 @@ def summarize_batch_growth(repos: list[dict[str, Any]], *, batch_keywords: list[
         "verification_queue": verification_queue[:5],
         "priority_candidates": priority_candidates,
         "cognition_updates": [
-            "Trending is only a discovery input, not proof of value.",
+            "A manual queue is only a discovery input, not proof of value.",
             "Evidence and actions should be separated; do not smuggle opinions in as fake precision.",
             "Docker files only describe runtime context, not repository quality.",
             "Outbound PRs stay on hold until runtime truth exists.",
@@ -848,19 +910,20 @@ def summarize_batch_growth(repos: list[dict[str, Any]], *, batch_keywords: list[
 
 def build_runtime_context(
     *,
-    since: str,
-    limit: int,
     clone_root: Path,
     manifest_path: Path,
+    manual_queue_path: Path | None,
+    repo_count: int,
 ) -> dict[str, Any]:
-    cadence = ["daily", "weekly", "monthly"]
-    backfill_order = [since, *[window for window in cadence if window != since]]
     return {
         "mode": "batch-checkpoint",
         "clone_root": str(clone_root),
         "manifest_path": str(manifest_path),
-        "batch_limit": limit,
-        "backfill_order": backfill_order,
+        "discovery_mode": "manual-only",
+        "manual_queue": {
+            "path": str(manual_queue_path) if manual_queue_path else None,
+            "repo_count": repo_count,
+        },
         "repo_sync": {
             "if_missing": "git clone --depth 1 <repo> <target>",
             "if_present": ["git fetch --all --prune", "git pull --ff-only"],
@@ -870,7 +933,7 @@ def build_runtime_context(
             "command": "git pull --ff-only",
             "healthcheck": (
                 "python -m py_compile "
-                "scripts/openclaw_trending_pipeline.py "
+                "scripts/openclaw_repo_queue_pipeline.py "
                 "scripts/agentic_review_loop.py "
                 "scripts/openclaw_long_run.py"
             ),
@@ -928,33 +991,14 @@ def build_blocked_contribution_hypothesis(sync_error: str) -> dict[str, Any]:
     }
 
 
-def fetch_trending_html(*, since: str = "daily", language: str | None = None) -> str:
-    query = {"since": since}
-    if language:
-        query["l"] = language
-    url = f"https://github.com/trending?{urlencode(query)}"
-    request = Request(
-        url,
-        headers={
-            "User-Agent": "CodeNexus-OpenClaw-Trending-Prototype/1.0",
-            "Accept-Language": "en-US,en;q=0.9",
-        },
-    )
-    with urlopen(request, timeout=30) as response:
-        return response.read().decode("utf-8")
-
-
 def run_pipeline(
     *,
-    limit: int,
     clone_root: Path,
     manifest_path: Path,
-    since: str = "daily",
-    language: str | None = None,
-    html: str | None = None,
+    manual_queue_path: Path | None = None,
 ) -> dict[str, Any]:
-    html = html if html is not None else fetch_trending_html(since=since, language=language)
-    repos = parse_trending_html(html)[:limit]
+    manual_repos = load_manual_repo_queue(manual_queue_path)
+    repos = list(manual_repos)
 
     results: list[dict[str, Any]] = []
     seed_analyses: list[tuple[TrendingRepo, dict[str, Any], dict[str, Any]]] = []
@@ -966,8 +1010,7 @@ def run_pipeline(
         except Exception as exc:
             sync_error = str(exc)
             blocked_keywords = _tokenize_keywords(
-                repo.get("description"),
-                repo.get("language"),
+                repo.get("full_name"),
                 sync_error,
             )
             results.append(
@@ -982,7 +1025,7 @@ def run_pipeline(
                     "local_path": None,
                     "sync_error": sync_error,
                     "analysis_profile": None,
-                    "analysis_summary": repo.get("description"),
+                    "analysis_summary": None,
                     "signals": {
                         "sync_ok": False,
                     },
@@ -1046,15 +1089,17 @@ def run_pipeline(
 
     manifest = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "source": "github-trending",
-        "since": since,
-        "language": language,
+        "source": "manual-queue",
         "batch_keywords": batch_keywords,
+        "manual_queue": {
+            "path": str(manual_queue_path) if manual_queue_path else None,
+            "repo_count": len(manual_repos),
+        },
         "runtime_context": build_runtime_context(
-            since=since,
-            limit=limit,
             clone_root=clone_root,
             manifest_path=manifest_path,
+            manual_queue_path=manual_queue_path,
+            repo_count=len(manual_repos),
         ),
         "learning_backlog": summarize_batch_growth(results, batch_keywords=batch_keywords),
         "repos": results,
@@ -1066,29 +1111,30 @@ def run_pipeline(
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Fetch GitHub Trending repositories, sync them locally, and write an evidence manifest."
+        description="Read the manual repo queue, sync repos locally, and write an evidence manifest."
     )
-    parser.add_argument("--limit", type=int, default=5)
-    parser.add_argument("--since", default="daily", choices=["daily", "weekly", "monthly"])
-    parser.add_argument("--language", default=None)
     parser.add_argument(
         "--clone-root",
         type=Path,
-        default=Path(tempfile.gettempdir()) / "codenexus-openclaw-trending" / "repos",
+        default=REPO_ROOT / "runtime" / "openclaw" / "repos",
     )
     parser.add_argument(
         "--manifest",
         type=Path,
-        default=Path(tempfile.gettempdir()) / "codenexus-openclaw-trending" / "analysis-manifest.json",
+        default=REPO_ROOT / "runtime" / "openclaw" / "latest-manifest.json",
+    )
+    parser.add_argument(
+        "--manual-queue",
+        type=Path,
+        default=REPO_ROOT / "MANUAL_REPO_QUEUE.md",
+        help="Plain-text file with one GitHub repository URL per line.",
     )
     args = parser.parse_args()
 
     manifest = run_pipeline(
-        limit=args.limit,
-        since=args.since,
-        language=args.language,
         clone_root=args.clone_root,
         manifest_path=args.manifest,
+        manual_queue_path=args.manual_queue,
     )
     print(json.dumps({"manifest": str(args.manifest), "repos": len(manifest["repos"])}, ensure_ascii=False))
     return 0
