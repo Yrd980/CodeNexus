@@ -22,22 +22,27 @@ Studied upstream snapshot:
 - [Claude Code Reusable Design Types](./claude-code-reusable-design-types.md)
 - focus: artifact model, permission model, task model, session model, extension model
 
-### 3. Permission And Governance
+### 3. Tool Contract And Schema Design
+
+- [Claude Code Tool Contract And Schema Design](./claude-code-tool-contract-and-schema-design.md)
+- focus: Tool contract, API schema projection, deferred loading, representative tool families
+
+### 4. Permission And Governance
 
 - [Claude Code Permission And Governance Model](./claude-code-permission-and-governance-model.md)
 - focus: permission modes, rule pipeline, tool-specific checks, shell governance, workspace-aware policy
 
-### 4. Task And Execution Topology
+### 5. Task And Execution Topology
 
 - [Claude Code Task And Execution Topology](./claude-code-task-and-execution-topology.md)
 - focus: task families, local vs remote execution, teammates, forked contexts, lifecycle framework
 
-### 5. Context Continuity
+### 6. Context Continuity
 
 - [Claude Code Context Continuity And Compaction](./claude-code-context-continuity-and-compaction.md)
 - focus: compaction prompts, API-round grouping, stripping, restoration, long-session continuity
 
-### 6. Command Skill Plugin Convergence
+### 7. Command Skill Plugin Convergence
 
 - [Claude Code Command Skill Plugin Convergence](./claude-code-command-skill-plugin-convergence.md)
 - focus: shared command graph, filtered skill views, plugin normalization, provenance without semantic drift
@@ -46,10 +51,11 @@ Studied upstream snapshot:
 
 1. Skills system
 2. Reusable design types
-3. Permission and governance
-4. Task and execution topology
-5. Context continuity and compaction
-6. Command skill plugin convergence
+3. Tool contract and schema design
+4. Permission and governance
+5. Task and execution topology
+6. Context continuity and compaction
+7. Command skill plugin convergence
 
 This order moves from local mechanism to larger runtime architecture.
 
@@ -58,6 +64,7 @@ This order moves from local mechanism to larger runtime architecture.
 Across these notes, `claude-code` now looks less like a bag of features and more like a composed runtime with several durable design themes:
 
 - typed capability artifacts
+- layered tool contracts
 - converged content registries
 - explicit governance
 - execution placement models
@@ -68,7 +75,6 @@ Across these notes, `claude-code` now looks less like a bag of features and more
 
 If we continue deepening this track, the highest-value next topics are likely:
 
-- tool contract and schema design in more detail
 - memory extraction and session memory pipeline
 - bridge and remote IDE integration model
 - MCP integration boundaries

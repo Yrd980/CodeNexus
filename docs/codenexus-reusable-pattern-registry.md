@@ -97,12 +97,15 @@ Current evidence sources:
 
 - [Claude Code Reusable Design Types](./claude-code-reusable-design-types.md)
 - [Claude Code Skills System Analysis](./claude-code-skills-system-analysis.md)
+- [Claude Code Tool Contract And Schema Design](./claude-code-tool-contract-and-schema-design.md)
 
 Portable value for CodeNexus:
 
 - keep workflow artifacts focused on sequencing and intent
 - model executable work surfaces as governed contracts
 - preserve the distinction between reusable workflow logic and host-specific action plumbing
+- separate tool definition from provider-facing schema projection
+- keep room for deferred visibility instead of equating registry membership with prompt exposure
 
 What not to copy blindly:
 
@@ -279,4 +282,3 @@ Study Note -> Reusable Pattern Registry -> Skill Candidate or Schema Proposal
 
 That progression is the main value of this artifact.
 It gives the repository a place to store portable mechanism before it hardens into executable workflow or formal schema.
-

@@ -14,6 +14,7 @@ The first baseline analysis in this repository studies Anthropic's leaked `claud
 
 - [Claude Code Skills System Analysis](./docs/claude-code-skills-system-analysis.md)
 - [Claude Code Reusable Design Types](./docs/claude-code-reusable-design-types.md)
+- [Claude Code Tool Contract And Schema Design](./docs/claude-code-tool-contract-and-schema-design.md)
 - [Claude Code Permission And Governance Model](./docs/claude-code-permission-and-governance-model.md)
 - [Claude Code Task And Execution Topology](./docs/claude-code-task-and-execution-topology.md)
 - [Claude Code Context Continuity And Compaction](./docs/claude-code-context-continuity-and-compaction.md)
